@@ -235,7 +235,11 @@ TU_WRAP_RE = re.compile(
 TU_CODE_RE = re.compile(
     r"(?<!\w)ТУ\s*[-–—]?\s*"
     r"(?:(?!(?:DN|PN|IP|ГОСТ|SDR)\b)(?:[A-ZА-Я]{1,4}|\d{1,3})\s+)?"
-    r"(?=[A-Za-zА-Яа-я0-9_.\-/]*\d)[A-Za-zА-Яа-я0-9_.\-/–—]+", re.I
+    r"(?=[A-Za-zА-Яа-я0-9_.\-/]*\d)[A-Za-zА-Яа-я0-9_.\-/–—]+"
+    # OCR / source tables may split one TU number with spaces around a
+    # hyphen or between its numeric groups. Consume only further code-like
+    # numeric groups, never following descriptive text or a protected OL tail.
+    r"(?:\s*(?:[-–—]\s*)?(?=\d[0-9.\-/–—]*\b)\d[0-9.\-/–—]*)*", re.I
 )
 STANDALONE_TU_RE = re.compile(r"(?<!\w)ТУ(?!\w)", re.I)
 CONTACT_RE = re.compile(
@@ -305,6 +309,14 @@ class Anonymizer:
         self.meta = data.get("meta", {})
         self.global_unique_rules = list(data.get("global_unique_rules", []))
         self.global_unique_rules.sort(key=lambda x: len(str(x.get("trigger", x.get("regex", "")))), reverse=True)
+        # Entries labelled "recovery" were promoted from observed output
+        # residues without enough evidence that the token is never a technical
+        # model. They remain useful for review, but are unsafe for deletion.
+        self.conservative_model_aliases = {
+            normalize_name(str(row.get("trigger", "")))
+            for row in self.global_unique_rules
+            if "recovery" in str(row.get("note", "")).casefold() and row.get("trigger")
+        }
         self.registry = {str(k): v for k, v in data.get("registry", {}).items()}
 
         self.rules_by_inn = defaultdict(list)
@@ -434,6 +446,7 @@ class Anonymizer:
 
     @staticmethod
     def _cleanup(text: str) -> str:
+        terminal_article = bool(re.search(ARTICLE_RE.pattern + r"\s*[.]?\s*$", text or "", re.I))
         # ГОСТ is a protected normative reference. In combined labels such as
         # "ГОСТ/ТУ NS-1" remove only the TU part, never ГОСТ itself.
         text = re.sub(r"(?i)\bГОСТ\s*/\s*ТУ\b", "ГОСТ", text)
@@ -473,7 +486,12 @@ class Anonymizer:
         s = re.sub(r"\[\s*\]", " ", s)
         # Remove only empty quote pairs created by a deleted quoted identifier.
         s = re.sub(r'["«»]\s*["«»]', " ", s)
-        s = re.sub(r"\s+", " ", s).strip(" ,;.-")
+        # A period may belong to the technical designation immediately before
+        # a removed TU tail. Preserve it; only discard a period belonging to a
+        # terminal article expression that was itself removed.
+        s = re.sub(r"\s+", " ", s).strip(" ,;-")
+        if terminal_article:
+            s = s.rstrip(".")
         return s.strip()
 
     def anonymize(self, name: str, code: str = "", factory: str = "") -> dict:
@@ -498,7 +516,16 @@ class Anonymizer:
                 rx = str(rr.get("regex", "")).strip()
                 if not trigger and not rx:
                     continue
+                note = str(rr.get("note", "")).casefold()
+                if "recovery" in note or "model family" in note:
+                    continue
                 pat = rx if rx else _boundary_pattern(trigger, str(rr.get("apply", "Точное совпадение")))
+                # Vehicle make plus a numeric designation describes the engine
+                # or chassis configuration and must survive as a unit.
+                if trigger.casefold() == "камаз" and re.search(
+                    r"(?i)(?:двигатель\s*-?\s*|на\s+шасси\s+)КАМАЗ-\d", s
+                ):
+                    continue
                 s2, n = re.subn(pat, _rule_replacement, s, flags=re.I)
                 if n:
                     applied_local.append(trigger or rx)
@@ -506,6 +533,21 @@ class Anonymizer:
             for rr in self._rules(active_factory, active_inn):
                 trigger = str(rr.get("trigger", "")).strip()
                 if not trigger:
+                    continue
+                # Catalogue / design documentation codes and non-exact model
+                # families are technical designations unless an independently
+                # confirmed brand-only rule exists. Earlier data marked these
+                # modes as removable and consequently truncated cable marks,
+                # instrument scales and electrical models. Be conservative.
+                rule_type = str(rr.get("type", "")).casefold()
+                apply_mode = str(rr.get("apply", ""))
+                if "код кд" in rule_type or (
+                    "серия / модель" in rule_type and apply_mode != "Точное совпадение"
+                ):
+                    continue
+                if "обозначение с префиксом" in rule_type and re.search(
+                    _boundary_pattern(trigger, apply_mode) + r"\s+\d", s, re.I
+                ):
                     continue
                 pat = _boundary_pattern(trigger, str(rr.get("apply", "")))
                 s2, n = re.subn(pat, _rule_replacement, s, flags=re.I)
@@ -517,13 +559,24 @@ class Anonymizer:
                 for alias in self.aliases_by_inn.get(active_inn, []):
                     if len(alias) < 3:
                         continue
+                    alias_norm = normalize_name(alias)
+                    if alias_norm in self.conservative_model_aliases:
+                        continue
+                    # A registered alias immediately followed by a numeric
+                    # suffix is often the full technical grade/model rather
+                    # than a standalone producer mention (e.g. GANK-4).
+                    if re.search(_alias_pattern(alias) + r"\s*-?\s*\d", s, re.I):
+                        continue
+                    if re.search(r'["«]' + _alias_pattern(alias) + r'["»]', s, re.I):
+                        continue
                     s2, n = re.subn(_alias_pattern(alias), " ", s, flags=re.I)
                     if n:
                         applied_local.append(alias)
                         s = s2
 
-                    alias_norm = normalize_name(alias)
                     if len(alias_norm) >= 4 and alias_norm not in GENERIC_TEXT_ALIASES:
+                        if re.search(r'["«]' + _alias_pattern(alias_norm) + r'["»]', s, re.I):
+                            continue
                         base_pat = _alias_pattern(alias_norm)
                         model = (
                             r"(?:-(?:[A-Za-zА-Яа-я0-9][A-Za-zА-Яа-я0-9._/+*\-,]*))?"
@@ -651,6 +704,16 @@ class Anonymizer:
             trigger = str(rr.get("trigger", "")).strip()
             if not trigger:
                 return
+            rule_type = str(rr.get("type", "")).casefold()
+            apply_mode = str(rr.get("apply", ""))
+            if "код кд" in rule_type or (
+                "серия / модель" in rule_type and apply_mode != "Точное совпадение"
+            ):
+                return
+            if "обозначение с префиксом" in rule_type and re.search(
+                _boundary_pattern(trigger, apply_mode) + r"\s+\d", text, re.I
+            ):
+                return
             pattern = _boundary_pattern(trigger, str(rr.get("apply", "")))
             if label_prefix == "unique" and trigger.upper() == "КШГ":
                 # Table extraction may insert unit / quantity columns between
@@ -680,6 +743,13 @@ class Anonymizer:
         for rr in self.global_unique_rules:
             trigger = str(rr.get("trigger", "")).strip()
             rx = str(rr.get("regex", "")).strip()
+            note = str(rr.get("note", "")).casefold()
+            if "recovery" in note or "model family" in note:
+                continue
+            if trigger.casefold() == "камаз" and re.search(
+                r"(?i)(?:двигатель\s*-?\s*|на\s+шасси\s+)КАМАЗ-\d", text
+            ):
+                continue
             if rx:
                 try:
                     for m in re.finditer(rx, text, re.I):
@@ -699,6 +769,13 @@ class Anonymizer:
         if inn:
             for alias in self.aliases_by_inn.get(inn, []):
                 if len(alias) < 3:
+                    continue
+                alias_norm = normalize_name(alias)
+                if alias_norm in self.conservative_model_aliases:
+                    continue
+                if re.search(_alias_pattern(alias) + r"\s*-?\s*\d", text, re.I):
+                    continue
+                if re.search(r'["«]' + _alias_pattern(alias) + r'["»]', text, re.I):
                     continue
                 pat = re.compile(_alias_pattern(alias), re.I)
                 for m in pat.finditer(text):
