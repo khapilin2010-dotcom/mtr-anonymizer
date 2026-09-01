@@ -1,0 +1,39 @@
+name: Windows release v16
+on:
+  workflow_dispatch:
+  push:
+    branches: [work]
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt pytest pyinstaller
+      - name: Run tests
+        run: python -m pytest -q
+      - name: Build Windows EXE
+        shell: cmd
+        run: build_exe.bat
+      - name: Assemble release directory
+        shell: pwsh
+        run: |
+          $release = 'release/MTR_Obezlichivatel_v16_Windows'
+          New-Item -ItemType Directory -Force $release | Out-Null
+          Copy-Item dist/MTR_Obezlichivatel.exe $release/
+          Copy-Item mtr_data.json.gz, MTR_Правила_runtime_v15_FINAL.json, ИНСТРУКЦИЯ_v16.md, ЖУРНАЛ_ВЕРСИИ_v16.txt $release/
+          if (!(Test-Path "$release/MTR_Obezlichivatel.exe")) { throw 'EXE missing' }
+          if ((Get-Item "$release/MTR_Obezlichivatel.exe").Length -lt 1000000) { throw 'EXE is unexpectedly small' }
+          foreach ($file in 'mtr_data.json.gz','MTR_Правила_runtime_v15_FINAL.json','ИНСТРУКЦИЯ_v16.md','ЖУРНАЛ_ВЕРСИИ_v16.txt') {
+            if (!(Test-Path "$release/$file")) { throw "Resource missing: $file" }
+          }
+          Compress-Archive -Path "$release/*" -DestinationPath release/MTR_Obezlichivatel_v16_Windows.zip
+          if ((Get-Item release/MTR_Obezlichivatel_v16_Windows.zip).Length -lt 1000000) { throw 'ZIP is unexpectedly small' }
+      - name: Upload ready ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: MTR_Obezlichivatel_v16_Windows
+          path: release/MTR_Obezlichivatel_v16_Windows.zip
+          if-no-files-found: error

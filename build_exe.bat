@@ -15,7 +15,6 @@ if not exist ".venv_build\Scripts\python.exe" (
 .venv_build\Scripts\python.exe -m PyInstaller --noconfirm --clean --onefile --windowed ^
   --name MTR_Obezlichivatel ^
   --add-data "mtr_data.json.gz;." ^
-  --add-data "tessdata;tessdata" ^
   --collect-all pymupdf ^
   MTR_Obezlichivatel.py || goto :error
 echo.
