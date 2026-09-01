@@ -1,0 +1,36 @@
+{
+  "report": {
+    "pages": 4,
+    "redactions": 48,
+    "blocks": 35,
+    "matches": 22,
+    "tu_continuations": 0,
+    "context_models": 0,
+    "ocr_pages": 4,
+    "ocr_failed_pages": 0,
+    "review": false,
+    "seconds": 16.23
+  },
+  "checks": {
+    "inn_numbers_after": [],
+    "radiant_after": 0,
+    "nord_after": 0,
+    "kvt_after": 0,
+    "kaluga_after": 0,
+    "loz_after": 0,
+    "ol2": true,
+    "ol3_visual_verified": true,
+    "ol4": true,
+    "ol5": true,
+    "gost3262": true,
+    "uhl_or_hl": true,
+    "dn": true,
+    "visual_review_pages": [
+      1,
+      2,
+      3,
+      4
+    ]
+  },
+  "note": "ОЛ3 визуально подтверждён на рендере страницы 2; повторный OCR не всегда распознаёт цифру 3."
+}

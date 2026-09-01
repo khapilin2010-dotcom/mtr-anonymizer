@@ -1,0 +1,62 @@
+{
+  "reports": [
+    {
+      "rows": 476,
+      "changed": 109,
+      "green": 85,
+      "yellow": 391,
+      "sheets": 1,
+      "keep_losses": 0,
+      "idempotence_failures": 0,
+      "residual_confirmed": 0,
+      "file": "009256_УСВР_СМР_1-7_ЖИГ (2).xlsx",
+      "seconds": 1.52
+    },
+    {
+      "rows": 2966,
+      "changed": 1356,
+      "green": 1016,
+      "yellow": 1950,
+      "sheets": 1,
+      "keep_losses": 0,
+      "idempotence_failures": 0,
+      "residual_confirmed": 0,
+      "file": "009256_УСВР_СМР_1-7_КАЗ (2).xlsx",
+      "seconds": 9.63
+    },
+    {
+      "rows": 90,
+      "changed": 57,
+      "green": 54,
+      "yellow": 36,
+      "sheets": 1,
+      "keep_losses": 0,
+      "idempotence_failures": 0,
+      "residual_confirmed": 0,
+      "file": "009256_СВО_1-7_98.2 (2).xlsx",
+      "seconds": 0.37
+    },
+    {
+      "rows": 2839,
+      "changed": 2541,
+      "green": 2490,
+      "yellow": 349,
+      "sheets": 1,
+      "keep_losses": 0,
+      "idempotence_failures": 0,
+      "residual_confirmed": 0,
+      "file": "009256_СВО_1-7_98.3 (1).xlsx",
+      "seconds": 15.05
+    }
+  ],
+  "total": {
+    "rows": 6371,
+    "green": 3645,
+    "yellow": 2726,
+    "changed": 4063,
+    "keep_losses": 0,
+    "idempotence_failures": 0,
+    "residual_confirmed": 0,
+    "seconds": 26.58
+  }
+}

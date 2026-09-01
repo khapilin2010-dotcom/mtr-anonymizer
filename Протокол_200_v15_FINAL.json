@@ -1,0 +1,11 @@
+{
+  "n": 200,
+  "keep_losses": 0,
+  "idempotence_failures": 0,
+  "residual_confirmed": 0,
+  "empty": 0,
+  "yellow": 24,
+  "green": 176,
+  "changed": 116,
+  "seconds": 0.667
+}

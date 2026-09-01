@@ -1,0 +1,34 @@
+{
+  "report": {
+    "pages": 4,
+    "redactions": 37,
+    "blocks": 180,
+    "matches": 26,
+    "tu_continuations": 0,
+    "context_models": 0,
+    "ocr_pages": 0,
+    "ocr_failed_pages": 0,
+    "review": false,
+    "seconds": 0.4
+  },
+  "checks": {
+    "legal_forms_after": {
+      "ООО": 0,
+      "АО": 0,
+      "ЗАО": 0,
+      "ОАО": 0,
+      "ФГУП": 0
+    },
+    "inn_numbers_after": [],
+    "request_after": 0,
+    "radiant_after": 0,
+    "nord_after": 0,
+    "kvt_after": 0,
+    "gost3262": true,
+    "ol2": true,
+    "ol3": true,
+    "ol4": true,
+    "ol5": true,
+    "uhl_or_hl": true
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "summary": {
+    "ok": 3,
+    "review": 0,
+    "errors": 1,
+    "total": 4,
+    "seconds": 15.74,
+    "queue_continued_after_error": true
+  },
+  "results": [
+    {
+      "file": "009256_СВО_1-7_98.2 (2).xlsx",
+      "status": "OK",
+      "report": {
+        "rows": 90,
+        "changed": 57,
+        "green": 54,
+        "yellow": 36,
+        "sheets": 1,
+        "keep_losses": 0,
+        "idempotence_failures": 0,
+        "residual_confirmed": 0
+      },
+      "output": "/mnt/data/mtr_v15_rebuild/final_batch_current/009256_СВО_1-7_98.2 (2)_anon.xlsx"
+    },
+    {
+      "file": "0349.047.Р.8!0.0004.Кг.053.00000.000-ГТМ.СО5_0.pdf",
+      "status": "OK",
+      "report": {
+        "pages": 4,
+        "redactions": 37,
+        "blocks": 180,
+        "matches": 26,
+        "tu_continuations": 0,
+        "context_models": 0,
+        "ocr_pages": 0,
+        "ocr_failed_pages": 0,
+        "review": false
+      },
+      "output": "/mnt/data/mtr_v15_rebuild/final_batch_current/0349.047.Р.8!0.0004.Кг.053.00000.000-ГТМ.СО5_0_anon.pdf"
+    },
+    {
+      "file": "broken.unsupported",
+      "status": "ERROR",
+      "error": "Формат не поддерживается."
+    },
+    {
+      "file": "real_image_only_scan.pdf",
+      "status": "OK",
+      "report": {
+        "pages": 4,
+        "redactions": 48,
+        "blocks": 35,
+        "matches": 22,
+        "tu_continuations": 0,
+        "context_models": 0,
+        "ocr_pages": 4,
+        "ocr_failed_pages": 0,
+        "review": false
+      },
+      "output": "/mnt/data/mtr_v15_rebuild/final_batch_current/real_image_only_scan_anon.pdf"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+MTR v15 FINAL — RELEASE CHECKPOINT
+Дата: 31.08.2026
+Статус: FINAL
+
+Продолжать проект только от этого релиза.
+Критические тесты: PASS.
+- Excel: 6 371 строк; KEEP-loss 0; idempotence 0; confirmed residual 0.
+- Независимые 200: KEEP-loss 0; idempotence 0; confirmed residual 0; empty 0.
+- Text PDF: 37 redactions; supplier/INN/request/Radiant/NORD residues 0; OL2-OL5/GOST/UHL preserved.
+- OCR PDF: 4/4 OCR; errors 0; 48 redactions; numeric INN/Radiant/NORD/KVT/Kaluga/LOZ residues 0; OL2-OL5 visual KEEP; GOST/UHL/DN preserved.
+- Mixed batch: 3 OK + 1 intentional ERROR; queue continued.
+
+Последние правки FINAL: interleaved/split OCR INN, OCR Latin/Cyrillic legal forms, same-row PDF manufacturer context, KVT NORD, Radiant.
