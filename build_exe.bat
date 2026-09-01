@@ -1,11 +1,11 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
-where py >nul 2>nul
+where python >nul 2>nul
 if %errorlevel%==0 (
-  set PY=py
-) else (
   set PY=python
+) else (
+  set PY=py -3
 )
 if not exist ".venv_build\Scripts\python.exe" (
   %PY% -m venv .venv_build || goto :error
@@ -19,9 +19,12 @@ if not exist ".venv_build\Scripts\python.exe" (
   MTR_Obezlichivatel.py || goto :error
 echo.
 echo ГОТОВО: dist\MTR_Obezlichivatel.exe
+if /I "%CI%"=="true" exit /b 0
 explorer dist
-goto :eof
+exit /b 0
 :error
 echo.
 echo Ошибка сборки.
+if /I "%CI%"=="true" exit /b 1
 pause
+exit /b 1
