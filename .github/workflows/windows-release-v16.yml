@@ -1,0 +1,64 @@
+name: Windows release v16
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt pytest pyinstaller
+      - name: Install Tesseract OCR RU+EN
+        shell: pwsh
+        run: |
+          choco install tesseract --yes --no-progress
+          $tessdata = 'C:\Program Files\Tesseract-OCR\tessdata'
+          Invoke-WebRequest https://github.com/tesseract-ocr/tessdata_fast/raw/main/rus.traineddata -OutFile "$tessdata\rus.traineddata"
+          "TESSDATA_PREFIX=$tessdata" | Out-File -FilePath $env:GITHUB_ENV -Append
+          & 'C:\Program Files\Tesseract-OCR\tesseract.exe' --list-langs
+      - name: Run tests
+        run: python -m pytest -q
+      - name: Build Windows EXE
+        shell: cmd
+        run: build_exe.bat
+      - name: Assemble release directory
+        shell: pwsh
+        run: |
+          $release = 'release/MTR_Obezlichivatel_v16_Windows'
+          New-Item -ItemType Directory -Force $release | Out-Null
+          Copy-Item dist/MTR_Obezlichivatel.exe $release/
+          Copy-Item mtr_data.json.gz, ИНСТРУКЦИЯ_v16.md, ЖУРНАЛ_ВЕРСИИ_v16.txt, FINAL_AUDIT_v16.md $release/
+          if (!(Test-Path "$release/MTR_Obezlichivatel.exe")) { throw 'EXE missing' }
+          if ((Get-Item "$release/MTR_Obezlichivatel.exe").Length -lt 1000000) { throw 'EXE is unexpectedly small' }
+          foreach ($file in 'mtr_data.json.gz','ИНСТРУКЦИЯ_v16.md','ЖУРНАЛ_ВЕРСИИ_v16.txt','FINAL_AUDIT_v16.md') {
+            if (!(Test-Path "$release/$file")) { throw "Resource missing: $file" }
+          }
+          Compress-Archive -Path "$release/*" -DestinationPath release/MTR_Obezlichivatel_v16_Windows.zip
+          if ((Get-Item release/MTR_Obezlichivatel_v16_Windows.zip).Length -lt 1000000) { throw 'ZIP is unexpectedly small' }
+      - name: Test packaged EXE without Python
+        shell: pwsh
+        run: |
+          $target = "$env:RUNNER_TEMP\Русская папка с пробелами"
+          Expand-Archive release/MTR_Obezlichivatel_v16_Windows.zip -DestinationPath $target
+          $marker = Join-Path $target 'SELF_TEST_OK.txt'
+          Remove-Item $marker -Force -ErrorAction SilentlyContinue
+          $process = Start-Process `
+            -FilePath (Join-Path $target 'MTR_Obezlichivatel.exe') `
+            -ArgumentList '--self-test' `
+            -WorkingDirectory $target `
+            -Wait `
+            -PassThru
+          if ($process.ExitCode -ne 0) { throw "EXE self-test exited with code $($process.ExitCode)" }
+          if (!(Test-Path $marker -PathType Leaf)) { throw 'EXE self-test marker was not created' }
+          $output = Get-Content $marker -Raw
+          if ($output -notmatch 'SELF_TEST_OK.*database=mtr_data.json.gz') { throw "Runtime database self-test failed: $output" }
+      - name: Upload ready ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: MTR_Obezlichivatel_v16_Windows
+          path: release/MTR_Obezlichivatel_v16_Windows.zip
+          if-no-files-found: error

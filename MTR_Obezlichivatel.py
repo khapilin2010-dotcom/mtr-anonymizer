@@ -7,6 +7,9 @@ import re
 import sys
 import threading
 import traceback
+import json
+import subprocess
+from datetime import datetime
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -14,7 +17,10 @@ from tkinter import filedialog, messagebox, ttk
 from mtr_core import Anonymizer, keep_signature
 
 APP_TITLE = "Обезличивание МТР"
-APP_VERSION = "15.0 FINAL"
+APP_VERSION = "16.0"
+APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "MTR_Obezlichivatel"
+LOG_FILE = APP_DIR / "mtr_v16.log"
+CONFIG_FILE = APP_DIR / "config.json"
 
 
 def resource_path(name: str) -> Path:
@@ -102,6 +108,12 @@ def process_excel(src: Path, dst: Path, az: Anonymizer, progress=None):
         processed_any = True
         report["sheets"] += 1
 
+        # Existing columns and formatting are retained; only missing report
+        # fields are appended to the right of the source table.
+        factory_col = cols.get("factory")
+        if not factory_col:
+            factory_col = ws.max_column + 1
+            ws.cell(header_row, factory_col).value = "Выявленный завод/производитель"
         anon_col = cols.get("anon")
         if not anon_col:
             anon_col = ws.max_column + 1
@@ -109,9 +121,11 @@ def process_excel(src: Path, dst: Path, az: Anonymizer, progress=None):
         status_col = cols.get("status")
         if not status_col:
             status_col = max(ws.max_column, anon_col) + 1
-            ws.cell(header_row, status_col).value = "Статус"
+            ws.cell(header_row, status_col).value = "Статус проверки"
+        removed_col = max(ws.max_column, status_col) + 1
+        ws.cell(header_row, removed_col).value = "Что именно удалено"
 
-        for c in (anon_col, status_col):
+        for c in (factory_col, anon_col, status_col, removed_col):
             cell = ws.cell(header_row, c)
             cell.font = Font(bold=True)
             cell.fill = header_fill
@@ -145,13 +159,12 @@ def process_excel(src: Path, dst: Path, az: Anonymizer, progress=None):
 
             ws.cell(r, anon_col).value = result["text"]
             ws.cell(r, status_col).value = result["status"]
+            ws.cell(r, factory_col).value = result["factory"] or factory
+            ws.cell(r, removed_col).value = "; ".join(dict.fromkeys(result["applied"]))
             fill = green_fill if result["status"] == "ЗЕЛЁНЫЙ" else yellow_fill
             ws.cell(r, status_col).fill = fill
             if cols.get("code"):
                 ws.cell(r, cols["code"]).fill = fill
-            if cols.get("factory"):
-                # The anonymized output must not retain producer details.
-                ws.cell(r, cols["factory"]).value = ""
 
             report["rows"] += 1
             report["changed"] += int(result["changed"])
@@ -165,6 +178,7 @@ def process_excel(src: Path, dst: Path, az: Anonymizer, progress=None):
 
         ws.column_dimensions[ws.cell(header_row, anon_col).column_letter].width = min(max(ws.column_dimensions[ws.cell(header_row, cols["name"]).column_letter].width or 25, 40), 100)
         ws.column_dimensions[ws.cell(header_row, status_col).column_letter].width = 15
+        ws.column_dimensions[ws.cell(header_row, removed_col).column_letter].width = 45
 
     if not processed_any:
         raise ValueError("Ни на одном листе не найдены подходящие столбцы для обработки.")
@@ -208,7 +222,13 @@ def process_csv(src: Path, dst: Path, az: Anonymizer, progress=None):
     header = rows[header_idx]
     anon_col = len(header)
     status_col = anon_col + 1
-    header.extend(["Обезличенное наименование", "Статус"])
+    factory_out_col = mapping.get("factory")
+    if factory_out_col is None:
+        factory_out_col = len(header)
+        header.append("Выявленный завод/производитель")
+    anon_col = len(header)
+    header.extend(["Обезличенное наименование", "Статус проверки", "Что именно удалено"])
+    status_col, removed_col = anon_col + 1, anon_col + 2
     max_len = len(header)
     report = {"rows": 0, "changed": 0, "green": 0, "yellow": 0, "sheets": 1}
 
@@ -223,8 +243,8 @@ def process_csv(src: Path, dst: Path, az: Anonymizer, progress=None):
         result = az.anonymize(name, code, factory)
         row[anon_col] = result["text"]
         row[status_col] = result["status"]
-        if mapping.get("factory") is not None:
-            row[mapping["factory"]] = ""
+        row[factory_out_col] = result["factory"] or factory
+        row[removed_col] = "; ".join(dict.fromkeys(result["applied"]))
         report["rows"] += 1
         report["changed"] += int(result["changed"])
         report["green"] += int(result["status"] == "ЗЕЛЁНЫЙ")
@@ -235,6 +255,64 @@ def process_csv(src: Path, dst: Path, az: Anonymizer, progress=None):
     with open(dst, "w", encoding="utf-8-sig", newline="") as f:
         writer = csv.writer(f, dialect=dialect)
         writer.writerows(rows)
+    return report
+
+
+def process_xls(src: Path, dst: Path, az: Anonymizer, progress=None):
+    """Process legacy BIFF .xls while retaining the source workbook layout."""
+    try:
+        import xlrd
+        from xlutils.copy import copy as copy_xls
+        import xlwt
+    except ImportError as exc:
+        raise RuntimeError("Для старого XLS требуются xlrd, xlwt и xlutils.") from exc
+    source = xlrd.open_workbook(str(src), formatting_info=True)
+    output = copy_xls(source)
+    report = {"rows": 0, "changed": 0, "green": 0, "yellow": 0, "sheets": 0}
+    green = xlwt.easyxf("pattern: pattern solid, fore_colour light_green;")
+    yellow = xlwt.easyxf("pattern: pattern solid, fore_colour light_yellow;")
+    for sheet_index, sheet in enumerate(source.sheets()):
+        header_row = mapping = None
+        for row in range(min(sheet.nrows, 30)):
+            heads = [norm_header(sheet.cell_value(row, col)) for col in range(sheet.ncols)]
+            found = {}
+            for col, heading in enumerate(heads):
+                if heading in {"код autodocs", "код автодокс", "код", "autodocs", "код мтр", "код ресурса"}: found.setdefault("code", col)
+                if heading in {"наименование", "наименование мтр", "мтр", "описание"}: found.setdefault("name", col)
+                if heading in {"завод", "изготовитель", "производитель", "поставщик", "завод/изготовитель/поставщик"}: found.setdefault("factory", col)
+            if "name" in found and ("code" in found or "factory" in found):
+                header_row, mapping = row, found
+                break
+        if mapping is None:
+            continue
+        report["sheets"] += 1
+        writable = output.get_sheet(sheet_index)
+        next_col = sheet.ncols
+        factory_col = mapping.get("factory")
+        if factory_col is None:
+            factory_col = next_col; next_col += 1
+            writable.write(header_row, factory_col, "Выявленный завод/производитель")
+        anon_col, status_col, removed_col = next_col, next_col + 1, next_col + 2
+        for col, value in ((anon_col, "Обезличенное наименование"), (status_col, "Статус проверки"), (removed_col, "Что именно удалено")):
+            writable.write(header_row, col, value)
+        for row in range(header_row + 1, sheet.nrows):
+            name = str(sheet.cell_value(row, mapping["name"])).strip()
+            if not name:
+                continue
+            code = str(sheet.cell_value(row, mapping["code"])).strip() if "code" in mapping else ""
+            factory = str(sheet.cell_value(row, mapping["factory"])).strip() if "factory" in mapping else ""
+            result = az.anonymize(name, code, factory)
+            style = green if result["status"] == "ЗЕЛЁНЫЙ" else yellow
+            writable.write(row, factory_col, result["factory"] or factory)
+            writable.write(row, anon_col, result["text"])
+            writable.write(row, status_col, result["status"], style)
+            writable.write(row, removed_col, "; ".join(dict.fromkeys(result["applied"])))
+            report["rows"] += 1; report["changed"] += int(result["changed"])
+            report["green"] += int(result["status"] == "ЗЕЛЁНЫЙ"); report["yellow"] += int(result["status"] == "ЖЁЛТЫЙ")
+        if progress: progress(f"XLS: обработан лист {sheet.name}")
+    if not report["sheets"]:
+        raise ValueError("Ни на одном листе XLS не найдены подходящие столбцы.")
+    output.save(str(dst))
     return report
 
 
@@ -621,11 +699,12 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(f"{APP_TITLE} {APP_VERSION}")
-        self.geometry("820x660")
-        self.minsize(720, 600)
+        self.geometry("1120x700")
+        self.minsize(960, 620)
         self.configure(bg="#F4F8FC")
         self.file_paths: list[Path] = []
         self.last_outputs: list[Path] = []
+        APP_DIR.mkdir(parents=True, exist_ok=True)
         self.az = Anonymizer(resource_path("mtr_data.json.gz"))
         self._build_style()
         self._build_ui()
@@ -663,30 +742,38 @@ class App(tk.Tk):
         ttk.Label(card, text="Файл для обработки", style="Card.TLabel", font=("Segoe UI Semibold", 11)).pack(anchor="w")
         self.file_label = ttk.Label(card, text="Файл не выбран", style="Card.TLabel", foreground="#6D7F90")
         self.file_label.pack(anchor="w", pady=(6, 12))
-        btns = ttk.Frame(card, style="Card.TFrame")
-        btns.pack(fill="x")
-        self.choose_btn = ttk.Button(btns, text="Выбрать файлы", command=self.choose_files, style="Secondary.TButton")
-        self.choose_btn.pack(side="left")
-        self.folder_btn = ttk.Button(btns, text="Выбрать папку", command=self.choose_folder, style="Secondary.TButton")
-        self.folder_btn.pack(side="left", padx=(8, 0))
-        self.run_btn = ttk.Button(btns, text="Обезличить", command=self.start_processing, style="Primary.TButton", state="disabled")
-        self.run_btn.pack(side="left", padx=10)
-        self.open_btn = ttk.Button(btns, text="Открыть папку результата", command=self.open_output_folder, style="Secondary.TButton", state="disabled")
-        self.open_btn.pack(side="left")
+        ttk.Button(card, text="Выбрать путь к Tesseract", command=self.choose_tesseract, style="Secondary.TButton").pack(anchor="w")
 
         info = ttk.Frame(outer, padding=(0, 16, 0, 8))
         info.pack(fill="x")
         ttk.Label(info, text="Поддерживается: Excel .xlsx/.xlsm, CSV, текстовые и сканированные PDF (OCR RU+EN). Код Autodocs и ОЛ сохраняются. Неуверенные случаи получают жёлтый/REVIEW статус.", style="Sub.TLabel", wraplength=750).pack(anchor="w")
 
-        self.progress = ttk.Progressbar(outer, mode="indeterminate")
+        self.progress = ttk.Progressbar(outer, mode="determinate", maximum=100)
         self.progress.pack(fill="x", pady=(4, 10))
 
         # Футер резервируется у нижней границы окна, чтобы подпись разработчика
         # оставалась видимой независимо от высоты журнала обработки.
         footer = ttk.Frame(outer)
         footer.pack(side="bottom", fill="x", pady=(12, 0))
-        ttk.Label(footer, text="Разработал: Хапилин Виктор", style="Sub.TLabel").pack(side="left")
+        ttk.Label(footer, text="разработал Хапилин Виктор", style="Sub.TLabel").pack(side="left")
         ttk.Label(footer, text=f"v{APP_VERSION}", style="Sub.TLabel").pack(side="right")
+
+        # Required actions stay together at the bottom of the interface.
+        btns = ttk.Frame(outer)
+        btns.pack(side="bottom", fill="x", pady=(10, 0))
+        self.choose_one_btn = ttk.Button(btns, text="Выбрать файл", command=self.choose_one, style="Secondary.TButton")
+        self.choose_one_btn.pack(side="left")
+        self.choose_btn = ttk.Button(btns, text="Выбрать несколько файлов", command=self.choose_files, style="Secondary.TButton")
+        self.choose_btn.pack(side="left", padx=4)
+        self.folder_btn = ttk.Button(btns, text="Выбрать папку", command=self.choose_folder, style="Secondary.TButton")
+        self.folder_btn.pack(side="left")
+        self.run_btn = ttk.Button(btns, text="Начать обработку", command=self.start_processing, style="Primary.TButton", state="disabled")
+        self.run_btn.pack(side="left", padx=4)
+        self.open_result_btn = ttk.Button(btns, text="Открыть результат", command=self.open_result, style="Secondary.TButton", state="disabled")
+        self.open_result_btn.pack(side="left")
+        self.open_btn = ttk.Button(btns, text="Открыть папку результатов", command=self.open_output_folder, style="Secondary.TButton", state="disabled")
+        self.open_btn.pack(side="left", padx=4)
+        ttk.Button(btns, text="Посмотреть журнал", command=self.open_log, style="Secondary.TButton").pack(side="left")
 
         log_card = ttk.Frame(outer, style="Card.TFrame", padding=12)
         log_card.pack(fill="both", expand=True)
@@ -696,6 +783,9 @@ class App(tk.Tk):
         self.log.configure(state="disabled")
 
     def log_msg(self, msg: str):
+        timestamped = f"{datetime.now():%Y-%m-%d %H:%M:%S} {msg.rstrip()}\n"
+        with LOG_FILE.open("a", encoding="utf-8") as handle:
+            handle.write(timestamped)
         def _write():
             self.log.configure(state="normal")
             self.log.insert("end", msg.rstrip() + "\n")
@@ -703,8 +793,24 @@ class App(tk.Tk):
             self.log.configure(state="disabled")
         self.after(0, _write)
 
+    def choose_one(self):
+        path = filedialog.askopenfilename(title="Выберите файл МТР", filetypes=[("Поддерживаемые файлы", "*.xlsx *.xls *.xlsm *.csv *.pdf")])
+        if path: self._set_files([path])
+
+    def choose_tesseract(self):
+        folder = filedialog.askdirectory(title="Выберите папку Tesseract-OCR или tessdata")
+        if not folder: return
+        chosen = Path(folder)
+        tessdata = chosen if chosen.name.lower() == "tessdata" else chosen / "tessdata"
+        if not (tessdata / "rus.traineddata").exists():
+            messagebox.showerror(APP_TITLE, "В выбранной папке не найден tessdata\\rus.traineddata")
+            return
+        CONFIG_FILE.write_text(json.dumps({"tessdata": str(tessdata)}, ensure_ascii=False), encoding="utf-8")
+        os.environ["TESSDATA_PREFIX"] = str(tessdata)
+        self.log_msg(f"Выбран Tesseract: {tessdata}")
+
     def _set_files(self, paths):
-        supported = {".xlsx", ".xlsm", ".csv", ".pdf"}
+        supported = {".xlsx", ".xls", ".xlsm", ".csv", ".pdf"}
         clean = []
         seen = set()
         for p in paths:
@@ -729,8 +835,8 @@ class App(tk.Tk):
         paths = filedialog.askopenfilenames(
             title="Выберите файлы МТР",
             filetypes=[
-                ("Поддерживаемые файлы", "*.xlsx *.xlsm *.csv *.pdf"),
-                ("Excel", "*.xlsx *.xlsm"), ("CSV", "*.csv"), ("PDF", "*.pdf"),
+                ("Поддерживаемые файлы", "*.xlsx *.xls *.xlsm *.csv *.pdf"),
+                ("Excel", "*.xlsx *.xls *.xlsm"), ("CSV", "*.csv"), ("PDF", "*.pdf"),
             ],
         )
         if paths:
@@ -747,12 +853,10 @@ class App(tk.Tk):
     def _set_busy(self, busy: bool):
         def _do():
             self.choose_btn.configure(state="disabled" if busy else "normal")
+            self.choose_one_btn.configure(state="disabled" if busy else "normal")
             self.folder_btn.configure(state="disabled" if busy else "normal")
             self.run_btn.configure(state="disabled" if busy or not self.file_paths else "normal")
-            if busy:
-                self.progress.start(12)
-            else:
-                self.progress.stop()
+            if not busy: self.progress.configure(value=0)
         self.after(0, _do)
 
     def start_processing(self):
@@ -766,6 +870,10 @@ class App(tk.Tk):
         if suffix in {".xlsx", ".xlsm"}:
             dst = src.with_name(src.stem + "_обезличено" + suffix)
             report = process_excel(src, dst, self.az, self.log_msg)
+            summary = f"{src.name}: {report['rows']} строк; зелёных {report['green']}; жёлтых {report['yellow']}; изменено {report['changed']}."
+        elif suffix == ".xls":
+            dst = src.with_name(src.stem + "_обезличено.xls")
+            report = process_xls(src, dst, self.az, self.log_msg)
             summary = f"{src.name}: {report['rows']} строк; зелёных {report['green']}; жёлтых {report['yellow']}; изменено {report['changed']}."
         elif suffix == ".csv":
             dst = src.with_name(src.stem + "_обезличено.csv")
@@ -803,14 +911,32 @@ class App(tk.Tk):
                 self.log_msg(f"{src.name}: ОШИБКА — {e}")
                 # Critical v15 behavior: one file never stops the remaining queue.
                 continue
+            finally:
+                self.after(0, lambda value=idx * 100 / total: self.progress.configure(value=value))
 
         self.last_outputs = outputs
         if outputs:
-            self.after(0, lambda: self.open_btn.configure(state="normal"))
+            self.after(0, lambda: (self.open_btn.configure(state="normal"), self.open_result_btn.configure(state="normal")))
         summary = f"Пакет завершён: успешно {ok}; REVIEW {review}; ошибок {errors}; всего {total}."
         self.log_msg(summary)
         self.after(0, lambda: messagebox.showinfo(APP_TITLE, summary))
         self._set_busy(False)
+
+    @staticmethod
+    def _open_path(path: Path):
+        if sys.platform.startswith("win"): os.startfile(str(path))  # type: ignore[attr-defined]
+        elif sys.platform == "darwin": subprocess.Popen(["open", str(path)])
+        else: subprocess.Popen(["xdg-open", str(path)])
+
+    def open_result(self):
+        if self.last_outputs:
+            try: self._open_path(self.last_outputs[-1])
+            except Exception as exc: messagebox.showerror(APP_TITLE, f"Не удалось открыть результат:\n{exc}")
+
+    def open_log(self):
+        LOG_FILE.touch(exist_ok=True)
+        try: self._open_path(LOG_FILE)
+        except Exception as exc: messagebox.showerror(APP_TITLE, f"Не удалось открыть журнал:\n{exc}")
 
     def open_output_folder(self):
         if not self.last_outputs:
@@ -830,5 +956,32 @@ class App(tk.Tk):
 
 
 if __name__ == "__main__":
-    app = App()
-    app.mainloop()
+    try:
+        if "--self-test" in sys.argv:
+            database = resource_path("mtr_data.json.gz")
+            checker = Anonymizer(database)
+            if not database.is_file() or not checker.registry or not checker.version:
+                raise RuntimeError("Runtime-база не загружена")
+            message = f"SELF_TEST_OK version={APP_VERSION} database={database.name} registry={len(checker.registry)}"
+            # A windowed PyInstaller executable has no stdout on Windows.
+            # The marker gives CI durable evidence that the packaged EXE itself
+            # started and loaded its embedded production database.
+            if getattr(sys, "frozen", False):
+                # CI starts the windowed EXE with its extracted release folder
+                # as the working directory.  Using cwd avoids PyInstaller
+                # one-file path ambiguities and puts the marker beside the EXE.
+                (Path.cwd() / "SELF_TEST_OK.txt").write_text(message, encoding="utf-8")
+            else:
+                print(message)
+            raise SystemExit(0)
+        if CONFIG_FILE.exists():
+            configured = json.loads(CONFIG_FILE.read_text(encoding="utf-8")).get("tessdata")
+            if configured: os.environ["TESSDATA_PREFIX"] = configured
+        app = App()
+        app.mainloop()
+    except Exception as exc:
+        APP_DIR.mkdir(parents=True, exist_ok=True)
+        with LOG_FILE.open("a", encoding="utf-8") as handle:
+            handle.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} КРИТИЧЕСКАЯ ОШИБКА\n{traceback.format_exc()}\n")
+        root = tk.Tk(); root.withdraw()
+        messagebox.showerror(APP_TITLE, f"Критическая ошибка: {exc}\n\nПодробности: {LOG_FILE}")
