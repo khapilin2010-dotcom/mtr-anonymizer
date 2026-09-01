@@ -271,6 +271,12 @@ PO_ORG_RE = re.compile(
 KP_ORG_RE = re.compile(
     rf"(?i)\bКП\s+{LEGAL_FORM}\s+{QUOTED_ORG}"
 )
+# Explicit producer attribution after "по технологии".  Match only the
+# attribution itself through the closing quote: technical text following the
+# organization (dimensions, material, GOST, fitting codes) must survive.
+TECHNOLOGY_ORG_RE = re.compile(
+    rf'(?i)\bпо\s+технологии\s+{LEGAL_FORM}\s+["«][^"»\n]{{1,140}}["»]'
+)
 ROLE_BARE_ORG_RE = re.compile(
     r"(?i)\b(?:производитель|изготовитель|поставщик|разработчик)\s*[:=–—-]?\s*"
     r"([A-Z][A-Za-z0-9&.+-]*(?:\s+[A-Z][A-Za-z0-9&.+-]*){0,4})(?=\s*[,;.]|$)"
@@ -472,6 +478,7 @@ class Anonymizer:
         s = LETTER_TAIL_RE.sub(" ", s)
         s = REQUEST_RE.sub(" ", s)
         s = KP_ORG_RE.sub("КП ", s)
+        s = TECHNOLOGY_ORG_RE.sub("; ", s)
         s = CONTACT_RE.sub(" ", s)
         s = re.sub(r"(?i)\bпо\s+типу\s*(?=(?:комплектация|№|Масса\b|[,;.]|$))", " ", s)
         s = re.sub(r"(?i)\bпо\s*(?=(?:комплектация|[,;.]|$))", " ", s)
@@ -546,7 +553,7 @@ class Anonymizer:
                 ):
                     continue
                 if "обозначение с префиксом" in rule_type and re.search(
-                    _boundary_pattern(trigger, apply_mode) + r"\s+\d", s, re.I
+                    _alias_pattern(trigger) + r"\s*-?\s*\d", s, re.I
                 ):
                     continue
                 pat = _boundary_pattern(trigger, str(rr.get("apply", "")))
@@ -576,6 +583,8 @@ class Anonymizer:
 
                     if len(alias_norm) >= 4 and alias_norm not in GENERIC_TEXT_ALIASES:
                         if re.search(r'["«]' + _alias_pattern(alias_norm) + r'["»]', s, re.I):
+                            continue
+                        if re.search(_alias_pattern(alias_norm) + r"\s*-?\s*\d", s, re.I):
                             continue
                         base_pat = _alias_pattern(alias_norm)
                         model = (
@@ -711,7 +720,7 @@ class Anonymizer:
             ):
                 return
             if "обозначение с префиксом" in rule_type and re.search(
-                _boundary_pattern(trigger, apply_mode) + r"\s+\d", text, re.I
+                _alias_pattern(trigger) + r"\s*-?\s*\d", text, re.I
             ):
                 return
             pattern = _boundary_pattern(trigger, str(rr.get("apply", "")))
@@ -794,6 +803,7 @@ class Anonymizer:
             ("supplier_org_inn", PDF_ORG_WITH_INN_RE),
             ("letter_tail", LETTER_TAIL_RE),
             ("request", REQUEST_RE),
+            ("technology_org", TECHNOLOGY_ORG_RE),
         ):
             for m in pat.finditer(text):
                 candidates.append((m.start(), m.end(), label))

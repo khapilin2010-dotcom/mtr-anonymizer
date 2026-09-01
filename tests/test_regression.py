@@ -38,6 +38,25 @@ def test_extended_technical_values_survive(az, technical):
     assert technical in result
 
 
+def test_technology_organization_removed_without_technical_tail(az):
+    source = ('Соединение Ст.09Г2С Skin-система по технологии ООО '
+              '"Специальные системы и технологии" труба 32х3,0 '
+              'ГОСТ 8732-78/ст.20 КШ.Ц.С.020/015.016.03')
+    result = az.anonymize(source)["text"]
+    assert result == ('Соединение Ст.09Г2С Skin-система; труба 32х3,0 '
+                      'ГОСТ 8732-78/ст.20 КШ.Ц.С.020/015.016.03')
+
+
+def test_model_and_ol_inside_tu_context_are_protected(az):
+    source = ('Газоанализатор. Комплектация по обосновывающему документу '
+              'ГАНК-4 (А) КПГУ 413322002 ТУ '
+              '4505.00.Р.01.ВЖК-ПБ.3.155.ХЛ.ОЛ11 (изм.1) инв.№10127424')
+    result = az.anonymize(source, factory='ООО "НПО "ПРИБОР" ГАНК"')["text"]
+    assert result == ('Газоанализатор. Комплектация по обосновывающему документу '
+                      'ГАНК-4 (А) КПГУ 413322002 '
+                      '4505.00.Р.01.ВЖК-ПБ.3.155.ХЛ.ОЛ11 (изм.1) инв.№10127424')
+
+
 @pytest.mark.parametrize("brand", [
     "Унипол", "Гиперфлоу", "Метран", "Вэлан", "Ризур", "Рубеж",
     "Пензтяжпромарматура", "Волжский трубный завод",
@@ -84,3 +103,24 @@ def test_real_control_sample_matches_reference(az):
                 f"референс={row['Референс']}\nv16={actual}"
             )
     assert not mismatches, "Несовпадения с эталоном:\n\n" + "\n\n".join(mismatches)
+
+
+def test_all_expert_review_proposals(az):
+    """All seven reviewed outputs must match the proposed safe references."""
+    proposals = {}
+    for line in Path("REFERENCE_REVIEW_v16.md").read_text(encoding="utf-8").splitlines():
+        if not line.startswith("| **"):
+            continue
+        columns = [value.strip() for value in line.strip("|").split("|")]
+        code = columns[0].strip("*")
+        proposals[code] = columns[4].strip("*")
+    assert len(proposals) == 7
+    with Path("Контроль_200_v15_FINAL.csv").open(encoding="utf-8-sig", newline="") as handle:
+        rows = {row["Код Autodocs"]: row for row in csv.DictReader(handle, delimiter=";")}
+    mismatches = {}
+    for code, expected in proposals.items():
+        row = rows[code]
+        actual = az.anonymize(row["Исходное"], row["Код Autodocs"], row["Завод"])["text"]
+        if actual != expected:
+            mismatches[code] = {"expected": expected, "actual": actual}
+    assert not mismatches
