@@ -1,8 +1,8 @@
 name: Windows release v16
 on:
   workflow_dispatch:
-  push:
-    branches: [work]
+  pull_request:
+    branches: [main]
 jobs:
   build:
     runs-on: windows-latest
