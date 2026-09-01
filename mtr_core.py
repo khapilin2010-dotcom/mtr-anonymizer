@@ -11,6 +11,16 @@ from pathlib import Path
 
 TOKEN_TAIL = r'(?:[^\s,;]|,(?=\S)|;(?=\S))*'
 GENERIC_TEXT_ALIASES = {"оборудование", "мониторинг", "универсал", "источник", "монитор", "металлорукав", "контакт", "переход"}
+# Explicitly confirmed removable brands / product families.  Keep this list
+# separate from protected technical syntax so a future rule audit is simple.
+CONFIRMED_GLOBAL_BRANDS = (
+    "Унипол", "Гиперфлоу", "Метран", "Вэлан", "Ризур", "Рубеж",
+    "Пензтяжпромарматура", "Волжский трубный завод",
+)
+CONFIRMED_GLOBAL_BRAND_RE = re.compile(
+    r"(?i)(?<![\w])(?:" + "|".join(re.escape(x) for x in CONFIRMED_GLOBAL_BRANDS)
+    + r")(?:-[A-Za-zА-Яа-яЁё0-9._/]+)?(?![\w])"
+)
 # Verified short PDF designations. They are allowed as manufacturer-free PDF
 # fallbacks only with the strict patterns below.
 PDF_SHORT_UNIQUE_TRIGGERS = {"КШГ", "ПМТД"}
@@ -479,6 +489,9 @@ class Anonymizer:
         def apply_once(value: str, active_factory: str, active_inn: str):
             s = value
             applied_local = []
+            s, brand_count = CONFIRMED_GLOBAL_BRAND_RE.subn(
+                lambda match: (applied_local.append(match.group(0)) or " "), s
+            )
             # Confirmed global firm identifiers are safe without manufacturer context.
             for rr in self.global_unique_rules:
                 trigger = str(rr.get("trigger", "")).strip()
@@ -631,6 +644,9 @@ class Anonymizer:
 
         candidates: list[tuple[int, int, str]] = []
 
+        for match in CONFIRMED_GLOBAL_BRAND_RE.finditer(text):
+            candidates.append((match.start(), match.end(), "confirmed_brand:" + match.group(0)))
+
         def add_rule(rr, label_prefix="rule"):
             trigger = str(rr.get("trigger", "")).strip()
             if not trigger:
@@ -736,4 +752,3 @@ class Anonymizer:
         """Backward-compatible exact substrings for non-coordinate callers."""
         value = str(text or "")
         return [value[a:b] for a, b, _ in self.redaction_spans(value, code, factory)]
-
