@@ -107,9 +107,21 @@ def _make_table_pdf(path: Path, scan: bool = False):
         source_text = source_text.replace(hyphen, "-")
     source_text = " ".join(source_text.split())
     assert "Комплектация по обосновывающему документу TEST.0001-АТТ.ОЛ1" in source_text
+    supplier_zone = fitz.Rect(xs[4], ys[1], xs[5], ys[-1])
+    supplier_glyphs = [tuple(word[:4]) for word in page.get_text("words", sort=True)
+                       if fitz.Rect(*word[:4]).intersects(supplier_zone)]
+    assert supplier_glyphs, "Synthetic source has no supplier glyph boxes"
     redact_boxes = {
         "brand": [tuple(rect) for rect in page.search_for("Армтел")],
         "supplier_cell": [(xs[4], ys[1], xs[5], ys[2])],
+        "supplier_glyphs": supplier_glyphs,
+        "supplier_grid": [
+            # Inspect the grid stroke from the non-redacted side. Adjacent
+            # white cell background is not part of the line invariant.
+            (xs[4] - 0.55, ys[1], xs[4] - 0.15, ys[-1]),
+            (xs[5] - 0.55, ys[1], xs[5] - 0.15, ys[-1]),
+            *[(xs[4], y - 0.55, xs[5], y - 0.15) for y in ys[1:]],
+        ],
     }
     if scan:
         pix = page.get_pixmap(matrix=fitz.Matrix(3, 3), alpha=False)
@@ -285,7 +297,7 @@ def _assert_table_result(src, dst, report, xs, ys, keep_boxes, redact_boxes, ocr
                                 for word in (words or [])
                                 if fitz.Rect(*word[:4]).intersects(
                                     fitz.Rect(xs[4], ys[1], xs[5], ys[-1]))])
-    assert not supplier_text.strip(), {
+    supplier_evidence = {
         "supplier_text": supplier_text,
         "supplier_residual_words": supplier_residual_words,
         "supplier_column_boundary": xs[4],
@@ -298,6 +310,90 @@ def _assert_table_result(src, dst, report, xs, ys, keep_boxes, redact_boxes, ocr
         "code_keep_guard": report["ocr_table_diagnostics"][0].get(
             "code_keep_guard") if ocr else None,
     }
+    if not ocr:
+        assert not supplier_text.strip(), supplier_evidence
+    else:
+        grid_boxes = list(map(fitz.Rect, redact_boxes["supplier_grid"]))
+        artifact_grid_boxes = [fitz.Rect(grid.x0 - 0.7, grid.y0 - 0.7,
+                                         grid.x1 + 0.7, grid.y1 + 0.7)
+                               for grid in grid_boxes]
+
+        def dark_pixels_outside_grid(rect):
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=rect,
+                                  colorspace=fitz.csGRAY, alpha=False)
+            outside = 0
+            for py in range(pix.height):
+                for px in range(pix.width):
+                    if pix.samples[py * pix.width + px] >= 200:
+                        continue
+                    point = fitz.Point(rect.x0 + (px + 0.5) / 2,
+                                       rect.y0 + (py + 0.5) / 2)
+                    if not any(point in grid for grid in artifact_grid_boxes):
+                        outside += 1
+            return outside
+
+        residual_analysis = []
+        for residual in supplier_residual_words:
+            rect = fitz.Rect(residual["bbox"])
+            before = source_page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=rect,
+                                             alpha=False)
+            after = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=rect,
+                                    alpha=False)
+            residual_analysis.append({
+                **residual,
+                "confidence": None,  # PyMuPDF OCR TextPage does not expose it.
+                "source_ocr_words": [
+                    {"text": word[4], "bbox": tuple(word[:4])}
+                    for word in source_words
+                    if fitz.Rect(*word[:4]).intersects(rect)
+                ],
+                "pixel_diff": _pixel_diff(bytes(before.samples), bytes(after.samples),
+                                            before.width, before.n),
+                "intersects_source_supplier_glyph": any(
+                    (rect & fitz.Rect(box)).get_area() > 0
+                    for box in redact_boxes["supplier_glyphs"]),
+                "intersects_grid": any((rect & grid).get_area() > 0
+                                       for grid in artifact_grid_boxes),
+                "dark_pixels_outside_grid": dark_pixels_outside_grid(rect),
+            })
+
+        # OCR may label an intact table stroke as e.g. "in". It is harmless
+        # only when every remaining dark pixel belongs to an unchanged grid
+        # line; any off-grid glyph is a genuine supplier security failure.
+        assert all(item["intersects_grid"] and
+                   item["dark_pixels_outside_grid"] == 0
+                   for item in residual_analysis), {
+            **supplier_evidence, "residual_analysis": residual_analysis,
+        }
+        sensitive = re.compile(
+            r"(?i)(?:тестов|завод|инн|inn|ооо|оао|зао|пао|\bао\b|"
+            r"1234567890|123456789012)"
+        )
+        assert not sensitive.search(supplier_text), {
+            **supplier_evidence, "residual_analysis": residual_analysis,
+        }
+
+        # Security authority is the source glyph geometry: every original
+        # supplier word must contain dark pixels before redaction and none
+        # afterwards. This proves physical removal independent of OCR output.
+        for glyph_box in map(fitz.Rect, redact_boxes["supplier_glyphs"]):
+            before = source_page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=glyph_box,
+                                             colorspace=fitz.csGRAY, alpha=False)
+            after = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=glyph_box,
+                                    colorspace=fitz.csGRAY, alpha=False)
+            assert sum(value < 200 for value in before.samples) > 0
+            assert sum(value < 200 for value in after.samples) == 0, {
+                "source_supplier_glyph_bbox": tuple(glyph_box),
+                "residual_analysis": residual_analysis,
+            }
+
+        # Grid lines remain visually and physically identical.
+        for grid_box in grid_boxes:
+            before = source_page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=grid_box,
+                                             alpha=False)
+            after = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=grid_box,
+                                    alpha=False)
+            assert bytes(before.samples) == bytes(after.samples), tuple(grid_box)
     all_text = page.get_text("text", textpage=textpage)
     source_text = source_page.get_text("text", textpage=source_textpage)
     normalized_text = normalized(all_text)
@@ -333,7 +429,8 @@ def _assert_table_result(src, dst, report, xs, ys, keep_boxes, redact_boxes, ocr
     if ocr:
         # Non-KEEP sensitive glyphs must physically change, proving the test
         # does not pass merely because Tesseract failed to recognize them.
-        for boxes in redact_boxes.values():
+        for key in ("brand", "supplier_glyphs"):
+            boxes = redact_boxes[key]
             for box in map(fitz.Rect, boxes):
                 before = source_page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=box, alpha=False)
                 after = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=box, alpha=False)
