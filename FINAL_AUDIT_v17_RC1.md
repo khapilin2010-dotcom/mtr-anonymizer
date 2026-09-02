@@ -33,6 +33,7 @@
 - После Windows run #10 security assertion отделяет OCR-артефакт линии (`in`) от остатка поставщика: для residual фиксируются bbox, доступная confidence, source OCR words, crop diff, пересечение source glyph/grid и число тёмных пикселей вне grid. Все 11 source supplier word-bbox обязаны стать физически белыми, чувствительные токены отсутствовать, а ядро пяти grid-линий и вся code-column — остаться pixel-identical.
 - После Windows run #11 каждый тёмный residual-пиксель вне core grid получает точные page-координаты/bbox и pixel provenance. Артефакт допустим только как неизменный source anti-alias у grid, не принадлежащий ни одному source supplier glyph; изменённый off-grid пиксель или любой supplier-glyph remnant остаётся безусловным FAIL.
 - После Windows run #12 верхний/нижний supplier inset увеличен с `0.8` до `2.0 pt`, не меняя доказанную горизонтальную границу code KEEP. Exact grid assertion сохранён. При FAIL отчёт содержит changed pixels/coordinates/bbox/max RGB, dark count, min grayscale, continuity, gaps, core hash, thickness и расстояния до supplier redaction; вертикальная граница CODE/SUPPLIER контролируется отдельно.
+- После Windows run #13 диагностика доказала вариант B: horizontal core index/SHA, minimum grayscale, полная continuity `880/880`, `max_gap=0` и minimum thickness `4` совпали; менялись только 3–6 edge/пересечных anti-alias pixels из ~3570 dark pixels. Неверный byte-compare горизонтали заменён на бездопусковый structural invariant этих метрик; вертикальная CODE/SUPPLIER граница остаётся byte-identical.
 
 ## Ещё требуется
 

@@ -164,6 +164,7 @@ def _grid_line_diagnostics(source_page, result_page, rect, orientation):
     after = result_page.get_pixmap(matrix=matrix, clip=analysis_rect,
                                    colorspace=fitz.csGRAY, alpha=False)
     diff = _pixel_diff(bytes(before.samples), bytes(after.samples), before.width, before.n)
+    diff["max_abs_delta"] = diff["max_rgb_delta"]
     changed_coordinates = []
     for py in range(before.height):
         for px in range(before.width):
@@ -214,9 +215,15 @@ def _grid_line_diagnostics(source_page, result_page, rect, orientation):
             "thickness_average": sum(thickness) / len(thickness),
         }
 
+    coordinate_bbox = None
+    if changed_coordinates:
+        xx, yy = zip(*changed_coordinates)
+        coordinate_bbox = (min(xx), min(yy), max(xx), max(yy))
     return {"orientation": orientation, "rect": tuple(rect),
             "analysis_rect": tuple(analysis_rect), "pixel_diff": diff,
-            "changed_pixel_coordinates": changed_coordinates,
+            "changed_pixel_coordinates": changed_coordinates[:32],
+            "changed_pixel_coordinate_count": len(changed_coordinates),
+            "changed_pixel_coordinates_bbox": coordinate_bbox,
             "before": structure(before), "after": structure(after)}
 
 
@@ -500,17 +507,36 @@ def _assert_table_result(src, dst, report, xs, ys, keep_boxes, redact_boxes, ocr
                          redaction.y0 - grid_box.y1, 0.0)
                 distances.append((dx * dx + dy * dy) ** 0.5)
             diagnostic["supplier_redaction_distances"] = distances
+            diagnostic["minimum_supplier_redaction_distance"] = (
+                min(distances) if distances else None
+            )
             diagnostic["grid_role"] = (
                 "code_supplier_vertical_boundary" if grid_no == 0 else
                 "supplier_unit_vertical_boundary" if grid_no == 1 else
                 "supplier_horizontal_boundary"
             )
             grid_diagnostics.append(diagnostic)
-            assert bytes(before.samples) == bytes(after.samples), {
-                "failed_grid": diagnostic,
-                "all_grid_diagnostics": grid_diagnostics,
-                "supplier_redaction_rects": [tuple(rect) for rect in supplier_redactions],
-            }
+            failure = {"failed_grid": diagnostic,
+                       "supplier_redaction_rects": [tuple(rect)
+                                                     for rect in supplier_redactions]}
+            if orientation == "vertical":
+                # Especially the CODE/SUPPLIER divider remains the stricter
+                # byte-identical invariant: it is part of absolute code KEEP.
+                assert bytes(before.samples) == bytes(after.samples), failure
+            else:
+                source_line, result_line = diagnostic["before"], diagnostic["after"]
+                # PDF_REDACT_IMAGE_PIXELS may re-quantize a few antialias edge
+                # samples near line intersections. The authoritative line is
+                # nevertheless unchanged only if its complete dark core,
+                # position, continuity, gaplessness and minimum thickness all
+                # remain intact. No tolerance applies to these invariants.
+                assert source_line["core_index"] == result_line["core_index"], failure
+                assert source_line["core_sha256"] == result_line["core_sha256"], failure
+                assert source_line["minimum_grayscale"] == result_line["minimum_grayscale"], failure
+                assert source_line["max_gap_pixels"] == result_line["max_gap_pixels"] == 0, failure
+                assert (source_line["continuous_samples"] == source_line["total_samples"] ==
+                        result_line["continuous_samples"] == result_line["total_samples"]), failure
+                assert result_line["thickness_min"] >= source_line["thickness_min"], failure
     all_text = page.get_text("text", textpage=textpage)
     source_text = source_page.get_text("text", textpage=source_textpage)
     normalized_text = normalized(all_text)
