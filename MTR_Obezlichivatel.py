@@ -15,7 +15,7 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from mtr_core import Anonymizer, keep_signature
+from mtr_core import Anonymizer, PDF_PROTECTED_RES, keep_signature
 
 APP_TITLE = "Обезличивание МТР"
 APP_VERSION = "17.0 RC1"
@@ -718,6 +718,70 @@ def _distance_to_grid_boundary(rect, grid):
     return max(rect.x0 - boundary, boundary - rect.x1, 0.0)
 
 
+def _ocr_technical_keep_areas(text_blocks, words, fitz):
+    """Map protected technical OCR fragments to their physical glyph boxes."""
+    protected = []
+
+    def add(label, value, boxes):
+        if not boxes:
+            return
+        rect = fitz.Rect(boxes[0])
+        for box in boxes[1:]:
+            rect |= fitz.Rect(box)
+        # OCR glyph boxes can be fractionally narrower than visible antialias.
+        rect = fitz.Rect(rect.x0 - 0.8, rect.y0 - 0.8,
+                         rect.x1 + 0.8, rect.y1 + 0.8)
+        key = tuple(round(number, 2) for number in rect)
+        if not any(item["key"] == key for item in protected):
+            protected.append({"key": key, "label": label, "text": value,
+                              "rect": rect})
+
+    # Primary mapping uses the exact protected spans already employed by
+    # Anonymizer.redaction_spans, but converts them back to OCR line geometry.
+    for _block_rect, text, cmap in text_blocks:
+        for pattern in PDF_PROTECTED_RES:
+            for match in pattern.finditer(text):
+                by_line = {}
+                for index in range(match.start(), min(match.end(), len(cmap))):
+                    item = cmap[index]
+                    if item is None or not text[index].strip():
+                        continue
+                    line, bbox = item
+                    by_line.setdefault(line, []).append(bbox)
+                for boxes in by_line.values():
+                    add("protected_regex", match.group(0), boxes)
+
+    # Word-level backup protects technical tokens even when OCR whitespace or
+    # a glyph substitution prevents a multi-character regex match.
+    technical_word = re.compile(
+        r"(?i)^(?:IP\d+[A-Z]?|(?:УХЛ|ХЛ)\d*|Ex\w*|II[ABC]|T[1-6]|"
+        r"DN\d+(?:[.,]\d+)?|PN\d+(?:[.,]\d+)?|\d{1,3}Г\d[А-ЯA-Z]?|"
+        r"ГОСТ|ТУ|СТО|ТТП|TTP|\d+(?:[xх×]\d+)+|[A-ZА-Я]{2,}[-./]\S*\d\S*)$"
+    )
+    normalized_words = [(fitz.Rect(*word[:4]), str(word[4])) for word in words]
+    for index, (rect, word) in enumerate(normalized_words):
+        if not technical_word.fullmatch(word):
+            continue
+        boxes = [rect]
+        # Normative prefixes and Ex / DN / PN expressions commonly span the
+        # next words; protect their concrete neighbouring glyph boxes too.
+        if re.fullmatch(r"(?i)(?:ГОСТ|ТУ|СТО|ТТП|TTP|Ex\w*|DN|PN)", word):
+            boxes.extend(item[0] for item in normalized_words[index + 1:index + 4])
+        add("protected_ocr_word", word, boxes)
+
+    # Required phrase is absolute KEEP even when split into OCR words. Start
+    # from fuzzy 'Комплектация' and continue through the OL/designation word.
+    for index, (_rect, word) in enumerate(normalized_words):
+        if not _ocr_word_matches(word, "комплектация"):
+            continue
+        phrase = normalized_words[index:index + 10]
+        if any(re.search(r"(?i)(?:ОЛ|OL)\d", value) for _box, value in phrase):
+            add("required_phrase_ol", " ".join(value for _box, value in phrase),
+                [box for box, _value in phrase])
+
+    return protected
+
+
 def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
     try:
         import fitz
@@ -739,6 +803,8 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
               "redaction_rects": [], "code_keep_rects": [],
               "ocr_table_diagnostics": [],
               "grid_keep_rects": [], "ocr_redaction_diagnostics": [],
+              "technical_keep_rects": [], "technical_keep_diagnostics": [],
+              "prevented_technical_keep_overlaps": 0,
               "code_column_redaction_distances": [],
               "closest_code_redaction": None}
 
@@ -809,6 +875,17 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
         code_keep_rects, supplier_areas, code_before, table_mode, table_diagnostics = _table_redaction_zones(
             page, fitz, az, active_textpage
         )
+        technical_keep = []
+        if ocr_page and active_textpage is not None:
+            ocr_words = page.get_text("words", textpage=active_textpage, sort=True)
+            technical_keep = _ocr_technical_keep_areas(text_blocks, ocr_words, fitz)
+            report["technical_keep_rects"].extend(
+                tuple(item["rect"]) for item in technical_keep
+            )
+            report["technical_keep_diagnostics"].extend({
+                "page": page_no, "label": item["label"], "text": item["text"],
+                "rect": tuple(item["rect"]),
+            } for item in technical_keep)
         grid_guards = []
         if ocr_page and table_mode == "ocr-grid-columns":
             verticals = table_diagnostics.get("vertical_boundaries", [])
@@ -860,6 +937,17 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
         page_rects = []
         for supplier_rect in supplier_areas:
             safe_rects = _outside_protected_columns(supplier_rect, code_keep_rects, fitz)
+            before_technical_clip = [fitz.Rect(rect) for rect in safe_rects]
+            safe_rects = _outside_protected_rectangles(
+                safe_rects, [item["rect"] for item in technical_keep], fitz
+            )
+            if len(safe_rects) != len(before_technical_clip) or any(
+                not any(all(abs(a - b) <= 0.01 for a, b in zip(before, after))
+                        for after in safe_rects)
+                for before in before_technical_clip
+            ):
+                report["prevented_technical_keep_overlaps"] += 1
+                report["review"] = True
             before_grid_clip = [fitz.Rect(rect) for rect in safe_rects]
             safe_rects = _outside_protected_rectangles(
                 safe_rects, [item["rect"] for item in grid_guards], fitz
@@ -1066,6 +1154,24 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
                 for rect, original_glyph_bbox in rect_details:
                     expanded_rect = fitz.Rect(rect)
                     safe_rects = _outside_protected_columns(rect, code_keep_rects, fitz)
+                    intersected_technical = [
+                        {"label": item["label"], "text": item["text"],
+                         "keep_bbox": tuple(item["rect"]),
+                         "intersection_area": (expanded_rect & item["rect"]).get_area()}
+                        for item in technical_keep
+                        if (expanded_rect & item["rect"]).get_area() > 0
+                    ]
+                    before_technical_clip = [fitz.Rect(item) for item in safe_rects]
+                    safe_rects = _outside_protected_rectangles(
+                        safe_rects, [item["rect"] for item in technical_keep], fitz
+                    )
+                    if len(safe_rects) != len(before_technical_clip) or any(
+                        not any(all(abs(a - b) <= 0.01
+                                    for a, b in zip(before, after))
+                                for after in safe_rects)
+                        for before in before_technical_clip
+                    ):
+                        report["prevented_technical_keep_overlaps"] += 1
                     before_grid_clip = [fitz.Rect(item) for item in safe_rects]
                     safe_rects = _outside_protected_rectangles(
                         safe_rects, [item["rect"] for item in grid_guards], fitz
@@ -1109,6 +1215,8 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
                             "original_ocr_glyph_bbox": tuple(original_glyph_bbox),
                             "expanded_bbox": tuple(expanded_rect),
                             "final_safe_bbox": tuple(rect),
+                            "text_span": text[a:b],
+                            "technical_keep_intersections": intersected_technical,
                             "near_grid": near_grid,
                         })
                         if any((rect & keep).get_area() > 0 for keep in code_keep_rects):
