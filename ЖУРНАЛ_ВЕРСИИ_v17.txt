@@ -22,3 +22,4 @@ MTR Anonymizer v17 RC1 — 02.09.2026
 - RC1 run #11: residual OCR анализируется по происхождению каждого тёмного пикселя; координаты/bbox отделяют неизменный anti-alias сетки от реального supplier glyph или redaction-артефакта.
 - RC1 run #12: top/bottom supplier pixel-redaction отодвинута от grid на 2.0 pt; exact grid invariant дополнен метриками позиции, непрерывности, core stroke, толщины, RGB diff и расстояния до redaction.
 - RC1 run #13: для horizontal grid доказана неизменность core/позиции/непрерывности/толщины при различии только anti-alias intersections; structural invariant заменил неверный byte-compare, а вертикальный CODE/SUPPLIER divider остался byte-exact.
+- RC1 run #14: все supplier/generic OCR redactions физически вычитаются из raster-safe grid KEEP guards; журнал содержит rule и original/expanded/final rectangles с расстояниями до каждой близкой линии.

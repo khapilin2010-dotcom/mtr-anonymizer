@@ -677,11 +677,45 @@ def _outside_protected_columns(rect, protected, fitz):
     return [piece for piece in pieces if piece.width > 0.4 and piece.height > 0.4]
 
 
+def _outside_protected_rectangles(rects, protected, fitz):
+    """Subtract raster-safe grid guards from redaction rectangles."""
+    pieces = [fitz.Rect(rect) for rect in rects]
+    for guard in protected:
+        guard = fitz.Rect(guard)
+        next_pieces = []
+        for piece in pieces:
+            overlap = piece & guard
+            if overlap.is_empty or overlap.get_area() <= 0:
+                next_pieces.append(piece)
+                continue
+            if piece.y0 < overlap.y0:
+                next_pieces.append(fitz.Rect(piece.x0, piece.y0,
+                                             piece.x1, overlap.y0))
+            if overlap.y1 < piece.y1:
+                next_pieces.append(fitz.Rect(piece.x0, overlap.y1,
+                                             piece.x1, piece.y1))
+            if piece.x0 < overlap.x0:
+                next_pieces.append(fitz.Rect(piece.x0, overlap.y0,
+                                             overlap.x0, overlap.y1))
+            if overlap.x1 < piece.x1:
+                next_pieces.append(fitz.Rect(overlap.x1, overlap.y0,
+                                             piece.x1, overlap.y1))
+        pieces = next_pieces
+    return [piece for piece in pieces if piece.width > 0.4 and piece.height > 0.4]
+
+
 def _rectangle_distance(rect, keep):
     """Shortest page-coordinate distance between two rectangles."""
     dx = max(keep.x0 - rect.x1, rect.x0 - keep.x1, 0.0)
     dy = max(keep.y0 - rect.y1, rect.y0 - keep.y1, 0.0)
     return (dx * dx + dy * dy) ** 0.5
+
+
+def _distance_to_grid_boundary(rect, grid):
+    boundary = grid["boundary"]
+    if grid["orientation"] == "horizontal":
+        return max(rect.y0 - boundary, boundary - rect.y1, 0.0)
+    return max(rect.x0 - boundary, boundary - rect.x1, 0.0)
 
 
 def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
@@ -700,9 +734,11 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
               "ocr_failed_pages": 0, "review": False, "table_pages": 0,
               "supplier_cells_redacted": 0, "code_column_intersections": 0,
               "prevented_code_column_overlaps": 0,
+              "prevented_grid_overlaps": 0,
               "code_column_unchanged": True, "code_column_values": [],
               "redaction_rects": [], "code_keep_rects": [],
               "ocr_table_diagnostics": [],
+              "grid_keep_rects": [], "ocr_redaction_diagnostics": [],
               "code_column_redaction_distances": [],
               "closest_code_redaction": None}
 
@@ -773,6 +809,29 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
         code_keep_rects, supplier_areas, code_before, table_mode, table_diagnostics = _table_redaction_zones(
             page, fitz, az, active_textpage
         )
+        grid_guards = []
+        if ocr_page and table_mode == "ocr-grid-columns":
+            verticals = table_diagnostics.get("vertical_boundaries", [])
+            horizontals = table_diagnostics.get("horizontal_boundaries", [])
+            if verticals and horizontals:
+                # Empirical raster controls require one point around vertical
+                # strokes and two around horizontal strokes. These are KEEP
+                # regions, not visual overlays: every later OCR rule is split
+                # before PDF_REDACT_IMAGE_PIXELS is applied.
+                for x in verticals:
+                    grid_guards.append({"orientation": "vertical", "boundary": x,
+                                        "rect": fitz.Rect(x - 1.0, horizontals[0],
+                                                          x + 1.0, horizontals[-1])})
+                for y in horizontals:
+                    grid_guards.append({"orientation": "horizontal", "boundary": y,
+                                        "rect": fitz.Rect(verticals[0], y - 2.0,
+                                                          verticals[-1], y + 2.0)})
+                table_diagnostics["grid_guards"] = [
+                    {**item, "rect": tuple(item["rect"])} for item in grid_guards
+                ]
+                report["grid_keep_rects"].extend(
+                    tuple(item["rect"]) for item in grid_guards
+                )
         if ocr_page and code_keep_rects:
             # Run #8 proved that the changed pixels were exclusively on the
             # *left* code-column border (a redaction originating in column 3).
@@ -801,12 +860,38 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
         page_rects = []
         for supplier_rect in supplier_areas:
             safe_rects = _outside_protected_columns(supplier_rect, code_keep_rects, fitz)
+            before_grid_clip = [fitz.Rect(rect) for rect in safe_rects]
+            safe_rects = _outside_protected_rectangles(
+                safe_rects, [item["rect"] for item in grid_guards], fitz
+            )
+            if len(safe_rects) != len(before_grid_clip) or any(
+                not any(all(abs(a - b) <= 0.01 for a, b in zip(before, after))
+                        for after in safe_rects)
+                for before in before_grid_clip
+            ):
+                report["prevented_grid_overlaps"] += 1
             if not safe_rects:
+                report["review"] = True
                 continue
             for safe_rect in safe_rects:
                 page.add_redact_annot(safe_rect, fill=(1, 1, 1), cross_out=False)
                 page_rects.append(safe_rect)
                 report["redaction_rects"].append(tuple(safe_rect))
+                near_grid = [
+                    {"orientation": item["orientation"], "boundary": item["boundary"],
+                     "guard_rect": tuple(item["rect"]),
+                     "distance_to_guard": _rectangle_distance(safe_rect, item["rect"]),
+                     "distance_to_boundary": _distance_to_grid_boundary(safe_rect, item)}
+                    for item in grid_guards
+                    if _rectangle_distance(safe_rect, item["rect"]) < 5.0
+                ]
+                report["ocr_redaction_diagnostics"].append({
+                    "page": page_no, "label": "supplier_cell",
+                    "original_ocr_glyph_bbox": None,
+                    "expanded_bbox": tuple(supplier_rect),
+                    "final_safe_bbox": tuple(safe_rect),
+                    "near_grid": near_grid,
+                })
                 report["redactions"] += 1
             report["supplier_cells_redacted"] += 1
         # Some specifications split a TU number exactly at a page boundary:
@@ -953,6 +1038,7 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
 
             for a, b, _label in spans:
                 rects = _tight_redaction_rects(text, cmap, a, b, fitz)
+                rect_details = [(rect, fitz.Rect(rect)) for rect in rects]
                 if ocr_page and rects:
                     # OCR comes from an image. Thin strips delete a text object,
                     # but not the visible glyph pixels. Expand each matched strip
@@ -964,21 +1050,39 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
                             continue
                         ln, bb = item
                         full_groups.setdefault(ln, []).append(bb)
-                    rects = []
+                    rect_details = []
                     for ln in sorted(full_groups):
                         boxes = full_groups[ln]
                         x0=min(x[0] for x in boxes); y0=min(x[1] for x in boxes)
                         x1=max(x[2] for x in boxes); y1=max(x[3] for x in boxes)
-                        rects.append(fitz.Rect(x0-0.8, y0-0.8, x1+0.8, y1+0.8))
-                if not rects:
+                        original_glyph_bbox = fitz.Rect(x0, y0, x1, y1)
+                        rect_details.append((
+                            fitz.Rect(x0-0.8, y0-0.8, x1+0.8, y1+0.8),
+                            original_glyph_bbox,
+                        ))
+                if not rect_details:
                     continue
                 report["matches"] += 1
-                for rect in rects:
+                for rect, original_glyph_bbox in rect_details:
+                    expanded_rect = fitz.Rect(rect)
                     safe_rects = _outside_protected_columns(rect, code_keep_rects, fitz)
+                    before_grid_clip = [fitz.Rect(item) for item in safe_rects]
+                    safe_rects = _outside_protected_rectangles(
+                        safe_rects, [item["rect"] for item in grid_guards], fitz
+                    )
+                    if len(safe_rects) != len(before_grid_clip) or any(
+                        not any(all(abs(a - b) <= 0.01
+                                    for a, b in zip(before, after))
+                                for after in safe_rects)
+                        for before in before_grid_clip
+                    ):
+                        report["prevented_grid_overlaps"] += 1
                     if len(safe_rects) != 1 or (
                         safe_rects and any(abs(a - b) > 0.01 for a, b in zip(safe_rects[0], rect))
                     ):
                         report["prevented_code_column_overlaps"] += 1
+                    if not safe_rects:
+                        report["review"] = True
                     for rect in safe_rects:
                     # Avoid duplicate annotations from overlapping rules.
                         if any(
@@ -990,6 +1094,23 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
                         page.add_redact_annot(rect, fill=(1, 1, 1), cross_out=False)
                         page_rects.append(rect)
                         report["redaction_rects"].append(tuple(rect))
+                        near_grid = [
+                            {"orientation": item["orientation"],
+                             "boundary": item["boundary"],
+                             "guard_rect": tuple(item["rect"]),
+                             "distance_to_guard": _rectangle_distance(rect, item["rect"]),
+                             "distance_to_boundary": _distance_to_grid_boundary(rect, item)}
+                            for item in grid_guards
+                            if _rectangle_distance(rect, item["rect"]) < 5.0
+                        ]
+                        report["ocr_redaction_diagnostics"].append({
+                            "page": page_no, "label": _label,
+                            "source_rule": _label,
+                            "original_ocr_glyph_bbox": tuple(original_glyph_bbox),
+                            "expanded_bbox": tuple(expanded_rect),
+                            "final_safe_bbox": tuple(rect),
+                            "near_grid": near_grid,
+                        })
                         if any((rect & keep).get_area() > 0 for keep in code_keep_rects):
                             report["code_column_intersections"] += 1
                         report["redactions"] += 1
