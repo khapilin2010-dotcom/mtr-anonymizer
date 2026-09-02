@@ -230,4 +230,8 @@ def test_ocr_table_columns_are_respected(tmp_path):
     xs, ys, keep_boxes, redact_boxes = _make_table_pdf(src, scan=True)
     report = process_pdf(src, dst, Anonymizer())
     assert report["ocr_pages"] == 1 and report["ocr_failed_pages"] == 0
+    diagnostics = report["ocr_table_diagnostics"][0]
+    assert diagnostics["mode"] == "ocr-grid-columns", diagnostics
+    assert len(diagnostics["vertical_boundaries"]) >= 10, diagnostics
+    assert diagnostics["code_column_zone"] and diagnostics["supplier_column_zone"], diagnostics
     _assert_table_result(src, dst, report, xs, ys, keep_boxes, redact_boxes, ocr=True)

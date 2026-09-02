@@ -437,6 +437,42 @@ def _ocr_word_matches(value: str, expected: str) -> bool:
     return len(value) >= 2 and difflib.SequenceMatcher(None, value, expected).ratio() >= 0.72
 
 
+def _raster_table_boundaries(page, fitz):
+    """Detect long table grid lines in an image-only page.
+
+    OCR spelling is intentionally irrelevant here. A line must occupy over
+    half of the page in the other dimension, which excludes glyph strokes and
+    leaves the structural grid of specification tables.
+    """
+    scale = 1.5
+    pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale),
+                          colorspace=fitz.csGRAY, alpha=False)
+    samples = memoryview(pix.samples)
+    width, height = pix.width, pix.height
+    dark = 160
+    vertical_pixels = []
+    for x in range(width):
+        count = sum(samples[y * width + x] < dark for y in range(height))
+        if count >= height * 0.50:
+            vertical_pixels.append(x)
+    horizontal_pixels = []
+    for y in range(height):
+        row = samples[y * width:(y + 1) * width]
+        if sum(value < dark for value in row) >= width * 0.50:
+            horizontal_pixels.append(y)
+
+    def clusters(values):
+        groups = []
+        for value in values:
+            if groups and value <= groups[-1][-1] + 2:
+                groups[-1].append(value)
+            else:
+                groups.append([value])
+        return [sum(group) / len(group) / scale for group in groups]
+
+    return clusters(vertical_pixels), clusters(horizontal_pixels)
+
+
 def _table_redaction_zones(page, fitz, az, textpage=None):
     """Return immutable product-code cells and complete supplier text areas.
 
@@ -446,6 +482,9 @@ def _table_redaction_zones(page, fitz, az, textpage=None):
     borders and the adjacent product-code column cannot be touched.
     """
     code_cells, supplier_areas, code_values = [], [], []
+    diagnostics = {"header_words": [], "vertical_boundaries": [],
+                   "horizontal_boundaries": [], "code_column_zone": None,
+                   "supplier_column_zone": None, "reason": "not evaluated"}
     try:
         tables = page.find_tables().tables
     except Exception:
@@ -479,12 +518,47 @@ def _table_redaction_zones(page, fitz, az, textpage=None):
                             cell_rect.x0 + 0.8, cell_rect.y0 + 0.8,
                             cell_rect.x1 - 0.8, cell_rect.y1 - 0.8,
                         ))
-            return code_cells, supplier_areas, code_values, "native-table"
+            diagnostics["reason"] = "native vector table"
+            return code_cells, supplier_areas, code_values, "native-table", diagnostics
 
     # OCR fallback: derive column bands from the recognized table header.
     if textpage is not None:
         words = page.get_text("words", textpage=textpage, sort=True)
         normalized = [(fitz.Rect(*word[:4]), _header_key(word[4])) for word in words]
+        diagnostics["header_words"] = [
+            {"text": word[4], "bbox": tuple(word[:4])}
+            for word in words if word[1] < page.rect.height * 0.30
+        ]
+        verticals, horizontals = _raster_table_boundaries(page, fitz)
+        diagnostics["vertical_boundaries"] = verticals
+        diagnostics["horizontal_boundaries"] = horizontals
+
+        # A standard СО grid has nine columns. Once ten long vertical borders
+        # and header/data horizontal borders are visible, their geometry is a
+        # stronger signal than potentially damaged OCR header spelling.
+        if len(verticals) >= 10 and len(horizontals) >= 3:
+            grid_x = verticals[:10]
+            grid_y = horizontals
+            code_x0, code_x1 = grid_x[3], grid_x[4]
+            supplier_x0, supplier_x1 = grid_x[4], grid_x[5]
+            header_bottom = grid_y[1]
+            diagnostics["code_column_zone"] = (code_x0, header_bottom, code_x1, grid_y[-1])
+            diagnostics["supplier_column_zone"] = (supplier_x0, header_bottom,
+                                                     supplier_x1, grid_y[-1])
+            for top, bottom in zip(grid_y[1:-1], grid_y[2:]):
+                code_rect = fitz.Rect(code_x0, top, code_x1, bottom)
+                code_cells.append(code_rect)
+                code_values.append(" ".join(
+                    word for rect, word in normalized if rect.intersects(code_rect)
+                ))
+                # Clear the complete supplier cell while retaining its grid.
+                supplier_areas.append(fitz.Rect(
+                    supplier_x0 + 0.8, top + 0.8,
+                    supplier_x1 - 0.8, bottom - 0.8,
+                ))
+            diagnostics["reason"] = "nine-column raster grid"
+            return code_cells, supplier_areas, code_values, "ocr-grid-columns", diagnostics
+
         code_word = next(((rect, word) for rect, word in normalized if _ocr_word_matches(word, "код")), None)
         product_word = next(((rect, word) for rect, word in normalized if _ocr_word_matches(word, "продукции")), None)
         supplier_word = next(((rect, word) for rect, word in normalized if _ocr_word_matches(word, "поставщик")), None)
@@ -520,7 +594,11 @@ def _table_redaction_zones(page, fitz, az, textpage=None):
                     max(boundary + 0.8, rect.x0 - 0.8), rect.y0 - 0.8,
                     min(supplier_right - 0.8, rect.x1 + 0.8), rect.y1 + 0.8,
                 ))
-            return code_cells, supplier_areas, code_values, "ocr-columns"
+            diagnostics["code_column_zone"] = tuple(code_band)
+            diagnostics["supplier_column_zone"] = (boundary, header_bottom,
+                                                     supplier_right, page.rect.y1)
+            diagnostics["reason"] = "OCR header words"
+            return code_cells, supplier_areas, code_values, "ocr-columns", diagnostics
 
         # If OCR damaged a header word beyond fuzzy recognition, recover the
         # same two adjacent columns from strongly typed cell contents. Product
@@ -558,8 +636,14 @@ def _table_redaction_zones(page, fitz, az, textpage=None):
                     max(supplier_x0 + 0.8, rect.x0 - 0.8), rect.y0 - 0.8,
                     min(supplier_x1 - 0.8, rect.x1 + 0.8), rect.y1 + 0.8,
                 ) for rect in lines)
-                return code_cells, supplier_areas, code_values, "ocr-content-columns"
-    return code_cells, supplier_areas, code_values, "none"
+                diagnostics["code_column_zone"] = tuple(code_band)
+                diagnostics["supplier_column_zone"] = tuple(supplier_band)
+                diagnostics["reason"] = "typed OCR cell contents"
+                return code_cells, supplier_areas, code_values, "ocr-content-columns", diagnostics
+        diagnostics["reason"] = "no usable grid, headers, or typed adjacent columns"
+    else:
+        diagnostics["reason"] = "no OCR textpage"
+    return code_cells, supplier_areas, code_values, "none", diagnostics
 
 
 def _outside_protected_columns(rect, protected, fitz):
@@ -597,7 +681,8 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
               "supplier_cells_redacted": 0, "code_column_intersections": 0,
               "prevented_code_column_overlaps": 0,
               "code_column_unchanged": True, "code_column_values": [],
-              "redaction_rects": [], "code_keep_rects": []}
+              "redaction_rects": [], "code_keep_rects": [],
+              "ocr_table_diagnostics": []}
 
     # OCR is page-level: native text pages stay untouched, image-only pages are
     # recognized in Russian + English and redacted on the original page image.
@@ -663,9 +748,13 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
             if _fi:
                 factory_blocks.append((rect, _ff or az.manufacturer_name_by_inn.get(_fi, ""), _fi))
 
-        code_keep_rects, supplier_areas, code_before, table_mode = _table_redaction_zones(
+        code_keep_rects, supplier_areas, code_before, table_mode, table_diagnostics = _table_redaction_zones(
             page, fitz, az, active_textpage
         )
+        if ocr_page:
+            table_diagnostics["page"] = page_no
+            table_diagnostics["mode"] = table_mode
+            report["ocr_table_diagnostics"].append(table_diagnostics)
         if table_mode != "none":
             report["table_pages"] += 1
             report["code_column_values"].extend(code_before)
