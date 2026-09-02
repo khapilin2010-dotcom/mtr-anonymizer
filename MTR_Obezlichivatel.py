@@ -563,10 +563,11 @@ def _table_redaction_zones(page, fitz, az, textpage=None):
                 # Start just beyond the raster grid stroke. The asymmetric
                 # code KEEP guard below protects the border itself; using a
                 # second two-point inset here would leave the first supplier
-                # glyph partially outside physical image redaction.
+                # glyph partially outside physical image redaction. Horizontal
+                # borders have room for a two-point guard before text begins.
                 supplier_areas.append(fitz.Rect(
-                    supplier_x0 + 1.0, top + 0.8,
-                    supplier_x1 - 0.8, bottom - 0.8,
+                    supplier_x0 + 1.0, top + 2.0,
+                    supplier_x1 - 0.8, bottom - 2.0,
                 ))
             diagnostics["reason"] = "nine-column raster grid"
             return code_cells, supplier_areas, code_values, "ocr-grid-columns", diagnostics

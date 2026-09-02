@@ -150,6 +150,76 @@ def _pixel_diff(before, after, width, channels):
     }
 
 
+def _grid_line_diagnostics(source_page, result_page, rect, orientation):
+    """Describe exact pixels and structural continuity of one table line."""
+    scale = 4
+    matrix = fitz.Matrix(scale, scale)
+    center_x = (rect.x0 + rect.x1) / 2
+    center_y = (rect.y0 + rect.y1) / 2
+    analysis_rect = (fitz.Rect(rect.x0, center_y - 2, rect.x1, center_y + 2)
+                     if orientation == "horizontal" else
+                     fitz.Rect(center_x - 2, rect.y0, center_x + 2, rect.y1))
+    before = source_page.get_pixmap(matrix=matrix, clip=analysis_rect,
+                                    colorspace=fitz.csGRAY, alpha=False)
+    after = result_page.get_pixmap(matrix=matrix, clip=analysis_rect,
+                                   colorspace=fitz.csGRAY, alpha=False)
+    diff = _pixel_diff(bytes(before.samples), bytes(after.samples), before.width, before.n)
+    changed_coordinates = []
+    for py in range(before.height):
+        for px in range(before.width):
+            index = py * before.width + px
+            if before.samples[index] != after.samples[index]:
+                changed_coordinates.append((
+                    round(analysis_rect.x0 + (px + 0.5) / scale, 3),
+                    round(analysis_rect.y0 + (py + 0.5) / scale, 3),
+                ))
+
+    def structure(pix):
+        dark = 160
+        if orientation == "horizontal":
+            runs = [[py for py in range(pix.height)
+                     if pix.samples[py * pix.width + px] < dark]
+                    for px in range(pix.width)]
+            darkness = [sum(pix.samples[py * pix.width + px]
+                            for px in range(pix.width))
+                        for py in range(pix.height)]
+            core_index = min(range(pix.height), key=darkness.__getitem__)
+            core = bytes(pix.samples[core_index * pix.width:(core_index + 1) * pix.width])
+        else:
+            runs = [[px for px in range(pix.width)
+                     if pix.samples[py * pix.width + px] < dark]
+                    for py in range(pix.height)]
+            darkness = [sum(pix.samples[py * pix.width + px]
+                            for py in range(pix.height))
+                        for px in range(pix.width)]
+            core_index = min(range(pix.width), key=darkness.__getitem__)
+            core = bytes(pix.samples[py * pix.width + core_index]
+                         for py in range(pix.height))
+        thickness = [len(run) for run in runs]
+        present = [bool(run) for run in runs]
+        max_gap = gap = 0
+        for value in present:
+            gap = 0 if value else gap + 1
+            max_gap = max(max_gap, gap)
+        return {
+            "dark_pixel_count": sum(value < dark for value in pix.samples),
+            "minimum_grayscale": min(pix.samples),
+            "continuous_samples": sum(present),
+            "total_samples": len(present),
+            "max_gap_pixels": max_gap,
+            "core_index": core_index,
+            "core_sha256": hashlib.sha256(core).hexdigest(),
+            "thickness_min": min(thickness),
+            "thickness_max": max(thickness),
+            "thickness_average": sum(thickness) / len(thickness),
+        }
+
+    return {"orientation": orientation, "rect": tuple(rect),
+            "analysis_rect": tuple(analysis_rect), "pixel_diff": diff,
+            "changed_pixel_coordinates": changed_coordinates,
+            "before": structure(before), "after": structure(after)}
+
+
 def _save_and_redaction_controls(src, tmp_dir, code_rect, supplier_rect):
     """Distinguish save/recompression effects from image-pixel redaction."""
     matrix = fitz.Matrix(2, 2)
@@ -411,12 +481,36 @@ def _assert_table_result(src, dst, report, xs, ys, keep_boxes, redact_boxes, ocr
             }
 
         # Grid lines remain visually and physically identical.
-        for grid_box in grid_boxes:
+        grid_diagnostics = []
+        supplier_redactions = [fitz.Rect(rect) for rect in report["redaction_rects"]
+                               if fitz.Rect(rect).intersects(
+                                   fitz.Rect(xs[4], ys[1], xs[5], ys[-1]))]
+        for grid_no, grid_box in enumerate(grid_boxes):
             before = source_page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=grid_box,
                                              alpha=False)
             after = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=grid_box,
                                     alpha=False)
-            assert bytes(before.samples) == bytes(after.samples), tuple(grid_box)
+            orientation = "horizontal" if grid_box.width > grid_box.height else "vertical"
+            diagnostic = _grid_line_diagnostics(source_page, page, grid_box, orientation)
+            distances = []
+            for redaction in supplier_redactions:
+                dx = max(grid_box.x0 - redaction.x1,
+                         redaction.x0 - grid_box.x1, 0.0)
+                dy = max(grid_box.y0 - redaction.y1,
+                         redaction.y0 - grid_box.y1, 0.0)
+                distances.append((dx * dx + dy * dy) ** 0.5)
+            diagnostic["supplier_redaction_distances"] = distances
+            diagnostic["grid_role"] = (
+                "code_supplier_vertical_boundary" if grid_no == 0 else
+                "supplier_unit_vertical_boundary" if grid_no == 1 else
+                "supplier_horizontal_boundary"
+            )
+            grid_diagnostics.append(diagnostic)
+            assert bytes(before.samples) == bytes(after.samples), {
+                "failed_grid": diagnostic,
+                "all_grid_diagnostics": grid_diagnostics,
+                "supplier_redaction_rects": [tuple(rect) for rect in supplier_redactions],
+            }
     all_text = page.get_text("text", textpage=textpage)
     source_text = source_page.get_text("text", textpage=source_textpage)
     normalized_text = normalized(all_text)
