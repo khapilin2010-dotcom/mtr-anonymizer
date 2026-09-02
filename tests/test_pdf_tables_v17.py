@@ -29,7 +29,7 @@ def _make_table_pdf(path: Path, scan: bool = False):
                "Масса", "Примечание"]
     rows = [
         ["1", "Клапан Армтел IP66 УХЛ1 Ex d IIC T6 DN100 PN1,6 МПа сталь 09Г2С 100х50 мм",
-         "Модель TEST-M1 ГОСТ 12345 Комплектация по обосновывающему документу TEST.0001-АТТ.ОЛ1",
+         "Комплектация по обосновывающему документу TEST.0001-АТТ.ОЛ1\nМодель TEST-M1 ГОСТ 12345",
          "1234567 (0)1)\n4143086 (0)1)\n2576244 (0)1)",
          'АО "ТЕСТОВЫЙ ЗАВОД", ИНН 1234567890', "шт.", "1", "10", ""],
         ["2", "Труба 57х3,5 сталь 20 давление 1,6 МПа температура -60...+100С",
@@ -43,7 +43,19 @@ def _make_table_pdf(path: Path, scan: bool = False):
         for col, value in enumerate(values):
             page.insert_textbox((xs[col] + 2, ys[row_no + 1] + 4,
                                  xs[col + 1] - 2, ys[row_no + 2] - 4), value,
-                                fontsize=8, fontname="dejavu", fontfile=FONT)
+                                fontsize=7 if col == 2 else 8,
+                                fontname="dejavu", fontfile=FONT)
+    keep_tokens = ("IP66", "УХЛ1", "Ex d IIC T6", "DN100", "PN1,6 МПа",
+                   "09Г2С", "ГОСТ 12345", "100х50", "TEST.0001-АТТ.ОЛ1",
+                   "TEST-M1", "ТУ 1234-567-890", "TEST-M2")
+    keep_boxes = {token: [tuple(rect) for rect in page.search_for(token)] for token in keep_tokens}
+    assert all(keep_boxes.values()), f"Synthetic source overflowed KEEP text: {keep_boxes}"
+    source_text = " ".join(page.get_text().replace("\u00ad", "").split())
+    assert "Комплектация по обосновывающему документу TEST.0001-АТТ.ОЛ1" in source_text
+    redact_boxes = {
+        "brand": [tuple(rect) for rect in page.search_for("Армтел")],
+        "supplier_cell": [(xs[4], ys[1], xs[5], ys[2])],
+    }
     if scan:
         pix = page.get_pixmap(matrix=fitz.Matrix(3, 3), alpha=False)
         image = pix.tobytes("png")
@@ -52,10 +64,10 @@ def _make_table_pdf(path: Path, scan: bool = False):
         scanned.save(path); scanned.close(); doc.close()
     else:
         doc.save(path); doc.close()
-    return xs, ys
+    return xs, ys, keep_boxes, redact_boxes
 
 
-def _assert_table_result(src, dst, report, xs, ys, ocr=False):
+def _assert_table_result(src, dst, report, xs, ys, keep_boxes, redact_boxes, ocr=False):
     assert report["table_pages"] == 1
     assert report["supplier_cells_redacted"] >= 2
     assert report["code_column_unchanged"] is True
@@ -106,27 +118,50 @@ def _assert_table_result(src, dst, report, xs, ys, ocr=False):
     source_text = source_page.get_text("text", textpage=source_textpage)
     normalized_text = normalized(all_text)
     normalized_source_text = normalized(source_text)
-    for keep in ("IP66", "УХЛ1", "Ex d IIC T6", "DN100", "PN1,6 МПа",
-                 "09Г2С", "ГОСТ 12345", "100х50",
-                 "Комплектация по обосновывающему документу", "TEST.0001-АТТ.ОЛ1"):
-        assert keep in normalized_text
+    exact_native_keep = ("IP66", "УХЛ1", "Ex d IIC T6", "DN100", "PN1,6 МПа",
+                         "09Г2С", "ГОСТ 12345", "100х50",
+                         "Комплектация по обосновывающему документу", "TEST.0001-АТТ.ОЛ1")
+    if not ocr:
+        for keep in exact_native_keep:
+            assert keep in normalized_source_text, f"Fixture source lacks {keep!r}"
+            assert keep in normalized_text, f"Anonymized native PDF lost {keep!r}"
+    else:
+        # OCR spelling is non-authoritative. The visual glyph areas recorded
+        # before rasterization must remain pixel-identical and untouched by
+        # every physical redaction rectangle.
+        for token, boxes in keep_boxes.items():
+            for box in map(fitz.Rect, boxes):
+                assert all((box & fitz.Rect(redaction)).get_area() == 0
+                           for redaction in report["redaction_rects"]), token
+                before = source_page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=box, alpha=False)
+                after = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=box, alpha=False)
+                assert hashlib.sha256(before.samples).digest() == hashlib.sha256(after.samples).digest(), token
     # PDF extractors may represent the visual hyphen as U+00AD. Compare the
     # model semantically after removing only separators and whitespace, first
     # proving that it existed in the source and then that it survived.
     source_model_key = re.sub(r"[\s\-\u00ad]", "", normalized_source_text)
     result_model_key = re.sub(r"[\s\-\u00ad]", "", normalized_text)
     assert "TESTM1" in source_model_key
-    assert "TESTM1" in result_model_key
-    assert "ТУ 1234-567-890 TEST-M2" in normalized_text
+    if not ocr:
+        assert "TESTM1" in result_model_key
+        assert "ТУ 1234-567-890 TEST-M2" in normalized_text
     assert "ТЕСТОВЫЙ ЗАВОД" not in all_text and "1234567890" not in all_text
+    if ocr:
+        # Non-KEEP sensitive glyphs must physically change, proving the test
+        # does not pass merely because Tesseract failed to recognize them.
+        for boxes in redact_boxes.values():
+            for box in map(fitz.Rect, boxes):
+                before = source_page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=box, alpha=False)
+                after = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=box, alpha=False)
+                assert hashlib.sha256(before.samples).digest() != hashlib.sha256(after.samples).digest()
     result.close(); source.close()
 
 
 def test_native_table_columns_are_respected(tmp_path):
     src, dst = tmp_path / "table.pdf", tmp_path / "table_anon.pdf"
-    xs, ys = _make_table_pdf(src)
+    xs, ys, keep_boxes, redact_boxes = _make_table_pdf(src)
     report = process_pdf(src, dst, Anonymizer())
-    _assert_table_result(src, dst, report, xs, ys)
+    _assert_table_result(src, dst, report, xs, ys, keep_boxes, redact_boxes)
     repeat = tmp_path / "table_repeat.pdf"
     second = process_pdf(dst, repeat, Anonymizer())
     assert second.get("unchanged") is True
@@ -137,7 +172,7 @@ def test_ocr_table_columns_are_respected(tmp_path):
     if not os.environ.get("MTR_REQUIRE_OCR"):
         pytest.skip("Real RU+EN OCR is mandatory in Windows CI")
     src, dst = tmp_path / "scan.pdf", tmp_path / "scan_anon.pdf"
-    xs, ys = _make_table_pdf(src, scan=True)
+    xs, ys, keep_boxes, redact_boxes = _make_table_pdf(src, scan=True)
     report = process_pdf(src, dst, Anonymizer())
     assert report["ocr_pages"] == 1 and report["ocr_failed_pages"] == 0
-    _assert_table_result(src, dst, report, xs, ys, ocr=True)
+    _assert_table_result(src, dst, report, xs, ys, keep_boxes, redact_boxes, ocr=True)
