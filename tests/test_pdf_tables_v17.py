@@ -318,19 +318,38 @@ def _assert_table_result(src, dst, report, xs, ys, keep_boxes, redact_boxes, ocr
                                          grid.x1 + 0.7, grid.y1 + 0.7)
                                for grid in grid_boxes]
 
-        def dark_pixels_outside_grid(rect):
-            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=rect,
-                                  colorspace=fitz.csGRAY, alpha=False)
-            outside = 0
-            for py in range(pix.height):
-                for px in range(pix.width):
-                    if pix.samples[py * pix.width + px] >= 200:
+        def classify_residual_pixels(rect):
+            result_pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=rect,
+                                         colorspace=fitz.csGRAY, alpha=False)
+            source_pix = source_page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=rect,
+                                                colorspace=fitz.csGRAY, alpha=False)
+            outside, supplier_remnants, changed_outside = [], [], []
+            for py in range(result_pix.height):
+                for px in range(result_pix.width):
+                    index = py * result_pix.width + px
+                    if result_pix.samples[index] >= 200:
                         continue
                     point = fitz.Point(rect.x0 + (px + 0.5) / 2,
                                        rect.y0 + (py + 0.5) / 2)
                     if not any(point in grid for grid in artifact_grid_boxes):
-                        outside += 1
-            return outside
+                        coordinate = (round(point.x, 3), round(point.y, 3))
+                        outside.append(coordinate)
+                        if any(point in fitz.Rect(box)
+                               for box in redact_boxes["supplier_glyphs"]):
+                            supplier_remnants.append(coordinate)
+                        if source_pix.samples[index] != result_pix.samples[index]:
+                            changed_outside.append(coordinate)
+            outside_bbox = None
+            if outside:
+                xx, yy = zip(*outside)
+                outside_bbox = (min(xx), min(yy), max(xx), max(yy))
+            return {
+                "dark_pixels_outside_grid": len(outside),
+                "dark_pixels_outside_grid_coordinates": outside,
+                "dark_pixels_outside_grid_bbox": outside_bbox,
+                "source_supplier_glyph_remnant_pixels": supplier_remnants,
+                "changed_dark_pixels_outside_grid": changed_outside,
+            }
 
         residual_analysis = []
         for residual in supplier_residual_words:
@@ -339,6 +358,7 @@ def _assert_table_result(src, dst, report, xs, ys, keep_boxes, redact_boxes, ocr
                                              alpha=False)
             after = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=rect,
                                     alpha=False)
+            pixel_classification = classify_residual_pixels(rect)
             residual_analysis.append({
                 **residual,
                 "confidence": None,  # PyMuPDF OCR TextPage does not expose it.
@@ -354,14 +374,17 @@ def _assert_table_result(src, dst, report, xs, ys, keep_boxes, redact_boxes, ocr
                     for box in redact_boxes["supplier_glyphs"]),
                 "intersects_grid": any((rect & grid).get_area() > 0
                                        for grid in artifact_grid_boxes),
-                "dark_pixels_outside_grid": dark_pixels_outside_grid(rect),
+                **pixel_classification,
             })
 
         # OCR may label an intact table stroke as e.g. "in". It is harmless
-        # only when every remaining dark pixel belongs to an unchanged grid
-        # line; any off-grid glyph is a genuine supplier security failure.
+        # only when off-grid antialias pixels are unchanged source pixels and
+        # none belongs to any original supplier glyph. This pixel provenance
+        # check is stricter than trusting the OCR word bbox, which can be much
+        # wider than the actual dark pixels at a grid intersection.
         assert all(item["intersects_grid"] and
-                   item["dark_pixels_outside_grid"] == 0
+                   not item["source_supplier_glyph_remnant_pixels"] and
+                   not item["changed_dark_pixels_outside_grid"]
                    for item in residual_analysis), {
             **supplier_evidence, "residual_analysis": residual_analysis,
         }
