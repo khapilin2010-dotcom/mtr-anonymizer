@@ -13,3 +13,4 @@ MTR Anonymizer v17 RC1 — 02.09.2026
 - RC1 run #2: KEEP-проверка native PDF нормализует U+00AD, а OCR-код защищён строгим сравнением хэша пикселей crop исходной и обработанной колонки.
 - RC1 run #3: устранено переполнение строки synthetic OL; для каждого OCR KEEP-токена сохранён исходный bbox и добавлено сравнение пикселей до/после redaction.
 - RC1 run #4: размеры synthetic PDF и ячеек увеличены для одинакового результата с Arial на Windows; добавлена обязательная проверка результата каждого insert_textbox до запуска anonymizer.
+- RC1 run #5: поиск исходных bbox технических обозначений учитывает platform-specific soft/Unicode hyphen и fallback по координатам слов без изменения anonymizer или состава KEEP-проверок.

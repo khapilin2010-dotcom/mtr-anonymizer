@@ -14,6 +14,43 @@ FONT = ("C:/Windows/Fonts/arial.ttf" if os.name == "nt"
         else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
 
 
+def _find_source_token_boxes(page, token):
+    """Find visual token boxes despite platform-specific hyphen extraction."""
+    hyphens = ("-", "\u00ad", "\u2010", "\u2011")
+    variants = {token}
+    if "-" in token:
+        variants.update(token.replace("-", hyphen) for hyphen in hyphens)
+    for variant in variants:
+        boxes = page.search_for(variant)
+        if boxes:
+            return [tuple(box) for box in boxes]
+
+    # PyMuPDF on Windows can expose a visually ordinary '-' as a soft hyphen
+    # in extracted words while search_for() finds neither spelling. Match a
+    # short word sequence canonically and retain its actual visual geometry.
+    def canonical(value):
+        for hyphen in hyphens[1:]:
+            value = value.replace(hyphen, "-")
+        return "".join(value.split())
+
+    wanted = canonical(token)
+    words = page.get_text("words", sort=True)
+    matches = []
+    for start in range(len(words)):
+        combined = ""
+        for end in range(start, min(start + 8, len(words))):
+            combined += canonical(words[end][4])
+            if combined == wanted:
+                box = fitz.Rect(*words[start][:4])
+                for word in words[start + 1:end + 1]:
+                    box |= fitz.Rect(*word[:4])
+                matches.append(tuple(box))
+                break
+            if len(combined) >= len(wanted):
+                break
+    return matches
+
+
 def _make_table_pdf(path: Path, scan: bool = False):
     doc = fitz.open()
     # Keep the fixture deliberately roomy. Font metrics differ slightly
@@ -61,9 +98,12 @@ def _make_table_pdf(path: Path, scan: bool = False):
     keep_tokens = ("IP66", "УХЛ1", "Ex d IIC T6", "DN100", "PN1,6 МПа",
                    "09Г2С", "ГОСТ 12345", "100х50", "TEST.0001-АТТ.ОЛ1",
                    "TEST-M1", "ТУ 1234-567-890", "TEST-M2")
-    keep_boxes = {token: [tuple(rect) for rect in page.search_for(token)] for token in keep_tokens}
+    keep_boxes = {token: _find_source_token_boxes(page, token) for token in keep_tokens}
     assert all(keep_boxes.values()), f"Synthetic source overflowed KEEP text: {keep_boxes}"
-    source_text = " ".join(page.get_text().replace("\u00ad", "").split())
+    source_text = page.get_text()
+    for hyphen in ("\u00ad", "\u2010", "\u2011"):
+        source_text = source_text.replace(hyphen, "-")
+    source_text = " ".join(source_text.split())
     assert "Комплектация по обосновывающему документу TEST.0001-АТТ.ОЛ1" in source_text
     redact_boxes = {
         "brand": [tuple(rect) for rect in page.search_for("Армтел")],
@@ -106,7 +146,9 @@ def _assert_table_result(src, dst, report, xs, ys, keep_boxes, redact_boxes, ocr
         return " ".join(word[4] for word in source_words if fitz.Rect(*word[:4]).intersects(rect))
 
     def normalized(value):
-        return " ".join(value.replace("\u00ad", "").replace("\r", "\n").split())
+        for hyphen in ("\u00ad", "\u2010", "\u2011"):
+            value = value.replace(hyphen, "-")
+        return " ".join(value.replace("\r", "\n").split())
 
     code_rect = fitz.Rect(xs[3], ys[1], xs[4], ys[-1])
     code_text = normalized(region_text(code_rect))
