@@ -11,6 +11,19 @@ from pathlib import Path
 
 TOKEN_TAIL = r'(?:[^\s,;]|,(?=\S)|;(?=\S))*'
 GENERIC_TEXT_ALIASES = {"оборудование", "мониторинг", "универсал", "источник", "монитор", "металлорукав", "контакт", "переход"}
+# Explicitly confirmed removable brands / product families.  Keep this list
+# separate from protected technical syntax so a future rule audit is simple.
+CONFIRMED_GLOBAL_BRANDS = (
+    "Унипол", "Гиперфлоу", "Метран", "Вэлан", "Ризур", "Рубеж",
+    "Пензтяжпромарматура", "Волжский трубный завод",
+    "Армтел", "ИКСИА", "Аэро Иксиа", "Теплолюкс", "Аналитика",
+    "Эрис", "Феррум", "Телта", "Тропик", "PERCo", "Durcon", "TOFF",
+    "НПО ФСА", "ООО НПО ФСА", "НЗСП", "ООО НЗСП",
+)
+CONFIRMED_GLOBAL_BRAND_RE = re.compile(
+    r"(?i)(?<![\w])(?:" + "|".join(re.escape(x) for x in CONFIRMED_GLOBAL_BRANDS)
+    + r")(?:-[A-Za-zА-Яа-яЁё0-9._/]+)?(?![\w])"
+)
 # Verified short PDF designations. They are allowed as manufacturer-free PDF
 # fallbacks only with the strict patterns below.
 PDF_SHORT_UNIQUE_TRIGGERS = {"КШГ", "ПМТД"}
@@ -163,6 +176,32 @@ def keep_signature(text: str) -> dict[str, list[str]]:
     return out
 
 
+def _removed_fragments(before: str, after: str) -> list[str]:
+    """Return real deleted text fragments with conservative audit labels."""
+    import difflib
+    removed = []
+    for tag, a, b, _c, _d in difflib.SequenceMatcher(None, before, after).get_opcodes():
+        if tag not in {"delete", "replace"}:
+            continue
+        fragment = before[a:b].strip(" ,;.-")
+        if not fragment:
+            continue
+        if LETTER_TAIL_RE.search(fragment) or re.search(r"(?i)(?:ВО)?№.+\bот\b", fragment):
+            kind = "реквизиты письма"
+        elif re.search(r"(?i)\b(?:ООО|АО|ЗАО|ОАО|ПАО|НПО|НПП|ФГУП)\b", fragment):
+            kind = "производитель"
+        elif re.search(r"(?i)\bТУ\b", fragment):
+            kind = "производительский ТУ"
+        elif ARTICLE_RE.search(fragment):
+            kind = "артикул"
+        elif CONFIRMED_GLOBAL_BRAND_RE.search(fragment):
+            kind = "бренд"
+        else:
+            kind = "подтверждённый удаляемый признак"
+        removed.append(f"{kind}: {fragment}")
+    return list(dict.fromkeys(removed))
+
+
 def _rule_replacement(match: re.Match) -> str:
     keep = _protected_fragments(match.group(0))
     return (" " + " ".join(keep) + " ") if keep else " "
@@ -201,7 +240,7 @@ def _subtract_ranges(start: int, end: int, protected: list[tuple[int, int]]) -> 
 # Service references from supplier letters / TKP after a protected OL link.
 MONTHS = r"(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)"
 LETTER_TAIL_RE = re.compile(
-    rf"(?i)(?<![\w])№\s*[A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9._/\-–—]{{2,50}}"
+    rf"(?i)(?<![\w])(?:ВО\s*)?№\s*[A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9._/\-–—]{{2,50}}"
     rf"\s+от\s+(?:\d{{1,2}}\s+{MONTHS}\s+\d{{4}}|\d{{1,2}}[.]\d{{1,2}}[.]\d{{2,4}})\s*г?[.]?"
     r"(?:\s*,?\s*(?:п|поз)[.]?\s*\d+(?:[.]\d+)*)?"
 )
@@ -225,7 +264,11 @@ TU_WRAP_RE = re.compile(
 TU_CODE_RE = re.compile(
     r"(?<!\w)ТУ\s*[-–—]?\s*"
     r"(?:(?!(?:DN|PN|IP|ГОСТ|SDR)\b)(?:[A-ZА-Я]{1,4}|\d{1,3})\s+)?"
-    r"(?=[A-Za-zА-Яа-я0-9_.\-/]*\d)[A-Za-zА-Яа-я0-9_.\-/–—]+", re.I
+    r"(?=[A-Za-zА-Яа-я0-9_.\-/]*\d)[A-Za-zА-Яа-я0-9_.\-/–—]+"
+    # OCR / source tables may split one TU number with spaces around a
+    # hyphen or between its numeric groups. Consume only further code-like
+    # numeric groups, never following descriptive text or a protected OL tail.
+    r"(?:\s*(?:[-–—]\s*)?(?=\d[0-9.\-/–—]*\b)\d[0-9.\-/–—]*)*", re.I
 )
 STANDALONE_TU_RE = re.compile(r"(?<!\w)ТУ(?!\w)", re.I)
 CONTACT_RE = re.compile(
@@ -256,6 +299,12 @@ PO_ORG_RE = re.compile(
 )
 KP_ORG_RE = re.compile(
     rf"(?i)\bКП\s+{LEGAL_FORM}\s+{QUOTED_ORG}"
+)
+# Explicit producer attribution after "по технологии".  Match only the
+# attribution itself through the closing quote: technical text following the
+# organization (dimensions, material, GOST, fitting codes) must survive.
+TECHNOLOGY_ORG_RE = re.compile(
+    rf'(?i)\bпо\s+технологии\s+{LEGAL_FORM}\s+["«][^"»\n]{{1,140}}["»]'
 )
 ROLE_BARE_ORG_RE = re.compile(
     r"(?i)\b(?:производитель|изготовитель|поставщик|разработчик)\s*[:=–—-]?\s*"
@@ -295,6 +344,14 @@ class Anonymizer:
         self.meta = data.get("meta", {})
         self.global_unique_rules = list(data.get("global_unique_rules", []))
         self.global_unique_rules.sort(key=lambda x: len(str(x.get("trigger", x.get("regex", "")))), reverse=True)
+        # Entries labelled "recovery" were promoted from observed output
+        # residues without enough evidence that the token is never a technical
+        # model. They remain useful for review, but are unsafe for deletion.
+        self.conservative_model_aliases = {
+            normalize_name(str(row.get("trigger", "")))
+            for row in self.global_unique_rules
+            if "recovery" in str(row.get("note", "")).casefold() and row.get("trigger")
+        }
         self.registry = {str(k): v for k, v in data.get("registry", {}).items()}
 
         self.rules_by_inn = defaultdict(list)
@@ -424,6 +481,7 @@ class Anonymizer:
 
     @staticmethod
     def _cleanup(text: str) -> str:
+        terminal_article = bool(re.search(ARTICLE_RE.pattern + r"\s*[.]?\s*$", text or "", re.I))
         # ГОСТ is a protected normative reference. In combined labels such as
         # "ГОСТ/ТУ NS-1" remove only the TU part, never ГОСТ itself.
         text = re.sub(r"(?i)\bГОСТ\s*/\s*ТУ\b", "ГОСТ", text)
@@ -449,6 +507,7 @@ class Anonymizer:
         s = LETTER_TAIL_RE.sub(" ", s)
         s = REQUEST_RE.sub(" ", s)
         s = KP_ORG_RE.sub("КП ", s)
+        s = TECHNOLOGY_ORG_RE.sub("; ", s)
         s = CONTACT_RE.sub(" ", s)
         s = re.sub(r"(?i)\bпо\s+типу\s*(?=(?:комплектация|№|Масса\b|[,;.]|$))", " ", s)
         s = re.sub(r"(?i)\bпо\s*(?=(?:комплектация|[,;.]|$))", " ", s)
@@ -463,7 +522,12 @@ class Anonymizer:
         s = re.sub(r"\[\s*\]", " ", s)
         # Remove only empty quote pairs created by a deleted quoted identifier.
         s = re.sub(r'["«»]\s*["«»]', " ", s)
-        s = re.sub(r"\s+", " ", s).strip(" ,;.-")
+        # A period may belong to the technical designation immediately before
+        # a removed TU tail. Preserve it; only discard a period belonging to a
+        # terminal article expression that was itself removed.
+        s = re.sub(r"\s+", " ", s).strip(" ,;-")
+        if terminal_article:
+            s = s.rstrip(".")
         return s.strip()
 
     def anonymize(self, name: str, code: str = "", factory: str = "") -> dict:
@@ -479,13 +543,25 @@ class Anonymizer:
         def apply_once(value: str, active_factory: str, active_inn: str):
             s = value
             applied_local = []
+            s, brand_count = CONFIRMED_GLOBAL_BRAND_RE.subn(
+                lambda match: (applied_local.append(match.group(0)) or " "), s
+            )
             # Confirmed global firm identifiers are safe without manufacturer context.
             for rr in self.global_unique_rules:
                 trigger = str(rr.get("trigger", "")).strip()
                 rx = str(rr.get("regex", "")).strip()
                 if not trigger and not rx:
                     continue
+                note = str(rr.get("note", "")).casefold()
+                if "recovery" in note or "model family" in note:
+                    continue
                 pat = rx if rx else _boundary_pattern(trigger, str(rr.get("apply", "Точное совпадение")))
+                # Vehicle make plus a numeric designation describes the engine
+                # or chassis configuration and must survive as a unit.
+                if trigger.casefold() == "камаз" and re.search(
+                    r"(?i)(?:двигатель\s*-?\s*|на\s+шасси\s+)КАМАЗ-\d", s
+                ):
+                    continue
                 s2, n = re.subn(pat, _rule_replacement, s, flags=re.I)
                 if n:
                     applied_local.append(trigger or rx)
@@ -493,6 +569,21 @@ class Anonymizer:
             for rr in self._rules(active_factory, active_inn):
                 trigger = str(rr.get("trigger", "")).strip()
                 if not trigger:
+                    continue
+                # Catalogue / design documentation codes and non-exact model
+                # families are technical designations unless an independently
+                # confirmed brand-only rule exists. Earlier data marked these
+                # modes as removable and consequently truncated cable marks,
+                # instrument scales and electrical models. Be conservative.
+                rule_type = str(rr.get("type", "")).casefold()
+                apply_mode = str(rr.get("apply", ""))
+                if "код кд" in rule_type or (
+                    "серия / модель" in rule_type and apply_mode != "Точное совпадение"
+                ):
+                    continue
+                if "обозначение с префиксом" in rule_type and re.search(
+                    _alias_pattern(trigger) + r"\s*-?\s*\d", s, re.I
+                ):
                     continue
                 pat = _boundary_pattern(trigger, str(rr.get("apply", "")))
                 s2, n = re.subn(pat, _rule_replacement, s, flags=re.I)
@@ -504,13 +595,26 @@ class Anonymizer:
                 for alias in self.aliases_by_inn.get(active_inn, []):
                     if len(alias) < 3:
                         continue
+                    alias_norm = normalize_name(alias)
+                    if alias_norm in self.conservative_model_aliases:
+                        continue
+                    # A registered alias immediately followed by a numeric
+                    # suffix is often the full technical grade/model rather
+                    # than a standalone producer mention (e.g. GANK-4).
+                    if re.search(_alias_pattern(alias) + r"\s*-?\s*\d", s, re.I):
+                        continue
+                    if re.search(r'["«]' + _alias_pattern(alias) + r'["»]', s, re.I):
+                        continue
                     s2, n = re.subn(_alias_pattern(alias), " ", s, flags=re.I)
                     if n:
                         applied_local.append(alias)
                         s = s2
 
-                    alias_norm = normalize_name(alias)
                     if len(alias_norm) >= 4 and alias_norm not in GENERIC_TEXT_ALIASES:
+                        if re.search(r'["«]' + _alias_pattern(alias_norm) + r'["»]', s, re.I):
+                            continue
+                        if re.search(_alias_pattern(alias_norm) + r"\s*-?\s*\d", s, re.I):
+                            continue
                         base_pat = _alias_pattern(alias_norm)
                         model = (
                             r"(?:-(?:[A-Za-zА-Яа-я0-9][A-Za-zА-Яа-я0-9._/+*\-,]*))?"
@@ -553,8 +657,23 @@ class Anonymizer:
                 break
             inn, resolved_factory = next_inn, next_factory
 
+        removed = _removed_fragments(original, s)
         status = "ЗЕЛЁНЫЙ" if (fixed_inn or ever_identified or bool(applied)) else "ЖЁЛТЫЙ"
-        reason = "" if status == "ЗЕЛЁНЫЙ" else "Производитель не определён: применены только безопасные системные правила"
+        safety_failures = []
+        if keep_signature(original) != keep_signature(s):
+            safety_failures.append("потеря защищённой технической характеристики")
+        if self.redaction_spans(s, code, fixed_factory or resolved_factory):
+            safety_failures.append("остался подтверждённый удаляемый признак")
+        if LETTER_TAIL_RE.search(s):
+            safety_failures.append("остались реквизиты письма")
+        repeat_text, _repeat_applied = apply_once(s, resolved_factory, inn)
+        if repeat_text != s:
+            safety_failures.append("повторный прогон изменяет результат")
+        if safety_failures:
+            status = "ЖЁЛТЫЙ"
+        reason = "; ".join(safety_failures)
+        if status == "ЖЁЛТЫЙ" and not reason:
+            reason = "Производитель не определён: применены только безопасные системные правила"
         return {
             "text": s,
             "status": status,
@@ -562,6 +681,7 @@ class Anonymizer:
             "factory": fixed_factory or resolved_factory,
             "inn": fixed_inn or inn,
             "applied": applied,
+            "removed": removed,
             "changed": s != original,
         }
 
@@ -631,9 +751,22 @@ class Anonymizer:
 
         candidates: list[tuple[int, int, str]] = []
 
+        for match in CONFIRMED_GLOBAL_BRAND_RE.finditer(text):
+            candidates.append((match.start(), match.end(), "confirmed_brand:" + match.group(0)))
+
         def add_rule(rr, label_prefix="rule"):
             trigger = str(rr.get("trigger", "")).strip()
             if not trigger:
+                return
+            rule_type = str(rr.get("type", "")).casefold()
+            apply_mode = str(rr.get("apply", ""))
+            if "код кд" in rule_type or (
+                "серия / модель" in rule_type and apply_mode != "Точное совпадение"
+            ):
+                return
+            if "обозначение с префиксом" in rule_type and re.search(
+                _alias_pattern(trigger) + r"\s*-?\s*\d", text, re.I
+            ):
                 return
             pattern = _boundary_pattern(trigger, str(rr.get("apply", "")))
             if label_prefix == "unique" and trigger.upper() == "КШГ":
@@ -664,6 +797,13 @@ class Anonymizer:
         for rr in self.global_unique_rules:
             trigger = str(rr.get("trigger", "")).strip()
             rx = str(rr.get("regex", "")).strip()
+            note = str(rr.get("note", "")).casefold()
+            if "recovery" in note or "model family" in note:
+                continue
+            if trigger.casefold() == "камаз" and re.search(
+                r"(?i)(?:двигатель\s*-?\s*|на\s+шасси\s+)КАМАЗ-\d", text
+            ):
+                continue
             if rx:
                 try:
                     for m in re.finditer(rx, text, re.I):
@@ -684,6 +824,13 @@ class Anonymizer:
             for alias in self.aliases_by_inn.get(inn, []):
                 if len(alias) < 3:
                     continue
+                alias_norm = normalize_name(alias)
+                if alias_norm in self.conservative_model_aliases:
+                    continue
+                if re.search(_alias_pattern(alias) + r"\s*-?\s*\d", text, re.I):
+                    continue
+                if re.search(r'["«]' + _alias_pattern(alias) + r'["»]', text, re.I):
+                    continue
                 pat = re.compile(_alias_pattern(alias), re.I)
                 for m in pat.finditer(text):
                     candidates.append((m.start(), m.end(), f"alias:{alias}"))
@@ -701,7 +848,14 @@ class Anonymizer:
             ("supplier_org_inn", PDF_ORG_WITH_INN_RE),
             ("letter_tail", LETTER_TAIL_RE),
             ("request", REQUEST_RE),
+            ("technology_org", TECHNOLOGY_ORG_RE),
         ):
+            if label in {"reverse_tu", "vo_tu", "attached_tu", "tu_wrap", "tu", "standalone_tu"} and not inn:
+                # A TU / STO-like designation is technical by default. Physical
+                # PDF deletion requires manufacturer context from a registry,
+                # supplier cell or verified marker; the prefix alone is not
+                # sufficient evidence.
+                continue
             for m in pat.finditer(text):
                 candidates.append((m.start(), m.end(), label))
 
@@ -736,4 +890,3 @@ class Anonymizer:
         """Backward-compatible exact substrings for non-coordinate callers."""
         value = str(text or "")
         return [value[a:b] for a, b, _ in self.redaction_spans(value, code, factory)]
-
