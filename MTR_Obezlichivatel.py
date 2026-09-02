@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+import difflib
 import os
 import re
 import sys
@@ -423,6 +424,19 @@ def _header_key(value) -> str:
     return re.sub(r"[^a-zа-яё0-9]+", " ", str(value or "").casefold()).strip()
 
 
+def _ocr_word_matches(value: str, expected: str) -> bool:
+    """Tolerant header match for predictable OCR glyph substitutions."""
+    value = _header_key(value).replace("ё", "е")
+    expected = expected.casefold().replace("ё", "е")
+    if value == expected:
+        return True
+    # Common Latin/Cyrillic OCR mixtures are compared in one visual alphabet.
+    visual = str.maketrans({"a": "а", "b": "в", "c": "с", "e": "е", "k": "к",
+                            "m": "м", "h": "н", "o": "о", "p": "р", "t": "т", "x": "х"})
+    value = value.translate(visual)
+    return len(value) >= 2 and difflib.SequenceMatcher(None, value, expected).ratio() >= 0.72
+
+
 def _table_redaction_zones(page, fitz, az, textpage=None):
     """Return immutable product-code cells and complete supplier text areas.
 
@@ -471,11 +485,12 @@ def _table_redaction_zones(page, fitz, az, textpage=None):
     if textpage is not None:
         words = page.get_text("words", textpage=textpage, sort=True)
         normalized = [(fitz.Rect(*word[:4]), _header_key(word[4])) for word in words]
-        code_word = next(((rect, word) for rect, word in normalized if word == "код"), None)
-        product_word = next(((rect, word) for rect, word in normalized if word == "продукции"), None)
-        supplier_word = next(((rect, word) for rect, word in normalized if "поставщик" in word), None)
-        unit_word = next(((rect, word) for rect, word in normalized if word in {"ед", "единица"}), None)
-        type_word = next(((rect, word) for rect, word in normalized if word in {"тип", "марка"}), None)
+        code_word = next(((rect, word) for rect, word in normalized if _ocr_word_matches(word, "код")), None)
+        product_word = next(((rect, word) for rect, word in normalized if _ocr_word_matches(word, "продукции")), None)
+        supplier_word = next(((rect, word) for rect, word in normalized if _ocr_word_matches(word, "поставщик")), None)
+        unit_word = next(((rect, word) for rect, word in normalized if _ocr_word_matches(word, "ед")), None)
+        type_word = next(((rect, word) for rect, word in normalized if
+                          _ocr_word_matches(word, "тип") or _ocr_word_matches(word, "марка")), None)
         if code_word and product_word and supplier_word:
             code_header = code_word[0] | product_word[0]
             supplier_header = supplier_word[0]
@@ -506,6 +521,44 @@ def _table_redaction_zones(page, fitz, az, textpage=None):
                     min(supplier_right - 0.8, rect.x1 + 0.8), rect.y1 + 0.8,
                 ))
             return code_cells, supplier_areas, code_values, "ocr-columns"
+
+        # If OCR damaged a header word beyond fuzzy recognition, recover the
+        # same two adjacent columns from strongly typed cell contents. Product
+        # codes are 6-9 digits; supplier cells contain a legal form / INN. The
+        # computed bands are still clamped to text geometry, never page-wide.
+        code_tokens = [rect for rect, word in normalized if re.fullmatch(r"\d{6,9}", word)]
+        supplier_tokens = [rect for rect, word in normalized if (
+            _ocr_word_matches(word, "ооо") or _ocr_word_matches(word, "ао") or
+            _ocr_word_matches(word, "инн") or _ocr_word_matches(word, "завод")
+        )]
+        if code_tokens and supplier_tokens:
+            code_x0 = min(rect.x0 for rect in code_tokens) - 2
+            supplier_x0 = min(rect.x0 for rect in supplier_tokens) - 2
+            # Reject unrelated number / organization layouts: the supplier
+            # column must be immediately to the right of product codes.
+            if code_x0 < supplier_x0 and supplier_x0 - code_x0 < page.rect.width * 0.30:
+                data_top = min(rect.y0 for rect in code_tokens + supplier_tokens) - 2
+                supplier_x1 = min(
+                    page.rect.x1,
+                    unit_word[0].x0 - 1 if unit_word else
+                    supplier_x0 + (supplier_x0 - code_x0) * 1.15,
+                )
+                code_band = fitz.Rect(code_x0, data_top, supplier_x0, page.rect.y1)
+                code_cells.append(code_band)
+                code_values.append(" ".join(word for rect, word in normalized if rect.intersects(code_band)))
+                supplier_band = fitz.Rect(supplier_x0, data_top, supplier_x1, page.rect.y1)
+                supplier_words = [rect for rect, _word in normalized if rect.intersects(supplier_band)]
+                lines = []
+                for rect in sorted(supplier_words, key=lambda item: (round(item.y0 / 4), item.x0)):
+                    if lines and abs(lines[-1].y0 - rect.y0) <= 4:
+                        lines[-1] |= rect
+                    else:
+                        lines.append(fitz.Rect(rect))
+                supplier_areas.extend(fitz.Rect(
+                    max(supplier_x0 + 0.8, rect.x0 - 0.8), rect.y0 - 0.8,
+                    min(supplier_x1 - 0.8, rect.x1 + 0.8), rect.y1 + 0.8,
+                ) for rect in lines)
+                return code_cells, supplier_areas, code_values, "ocr-content-columns"
     return code_cells, supplier_areas, code_values, "none"
 
 

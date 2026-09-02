@@ -216,6 +216,10 @@ PDF_PROTECTED_RES = PROTECTED_FRAGMENT_RES + [
     OL_REF_RE,
     re.compile(r"(?i)\bсталь\s+(?:марки\s+)?[A-Za-zА-Яа-я0-9.-]+\b"),
     re.compile(r"(?i)(?<![A-Za-zА-Яа-я0-9])Ст\.?\s*[0-9]{1,3}[A-Za-zА-Яа-я0-9.-]*\b"),
+    # Structured engineering model / designation. Protect only tokens that
+    # contain an uppercase alphabetic prefix, a separator and a digit. This
+    # covers TEST-M1-like model codes without shielding ordinary prose.
+    re.compile(r"(?<![A-Za-zА-Яа-я0-9])(?:[A-ZА-ЯЁ]{2,}[A-ZА-ЯЁ0-9]*[-./][A-ZА-ЯЁ0-9._/-]*\d[A-ZА-ЯЁ0-9._/-]*)(?![A-Za-zА-Яа-я0-9])"),
 ]
 
 def _subtract_ranges(start: int, end: int, protected: list[tuple[int, int]]) -> list[tuple[int, int]]:
