@@ -552,8 +552,12 @@ def _table_redaction_zones(page, fitz, az, textpage=None):
                     word for rect, word in normalized if rect.intersects(code_rect)
                 ))
                 # Clear the complete supplier cell while retaining its grid.
+                # Image redaction rounds page coordinates to source-image
+                # pixels. Keep a two-point safety gutter at the shared code /
+                # supplier border so that rounding cannot rewrite its
+                # anti-aliased grid pixels or anything in the KEEP column.
                 supplier_areas.append(fitz.Rect(
-                    supplier_x0 + 0.8, top + 0.8,
+                    supplier_x0 + 2.0, top + 0.8,
                     supplier_x1 - 0.8, bottom - 0.8,
                 ))
             diagnostics["reason"] = "nine-column raster grid"

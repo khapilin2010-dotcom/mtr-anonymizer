@@ -97,7 +97,9 @@ def _make_table_pdf(path: Path, scan: bool = False):
                            label=f"row {row_no + 1}, column {col + 1}")
     keep_tokens = ("IP66", "УХЛ1", "Ex d IIC T6", "DN100", "PN1,6 МПа",
                    "09Г2С", "ГОСТ 12345", "100х50", "TEST.0001-АТТ.ОЛ1",
-                   "TEST-M1", "ТУ 1234-567-890", "TEST-M2")
+                   "TEST-M1", "ТУ 1234-567-890", "TEST-M2",
+                   "1234567 (0)1)", "4143086 (0)1)", "2576244 (0)1)",
+                   "Заявка № Z1234567 (1342)")
     keep_boxes = {token: _find_source_token_boxes(page, token) for token in keep_tokens}
     assert all(keep_boxes.values()), f"Synthetic source overflowed KEEP text: {keep_boxes}"
     source_text = page.get_text()
@@ -118,6 +120,64 @@ def _make_table_pdf(path: Path, scan: bool = False):
     else:
         doc.save(path); doc.close()
     return xs, ys, keep_boxes, redact_boxes
+
+
+def _pixel_diff(before, after, width, channels):
+    changed_channels = [index for index, pair in enumerate(zip(before, after))
+                        if pair[0] != pair[1]]
+    if not changed_channels:
+        return {"changed_pixels": 0, "bbox": None, "max_rgb_delta": 0}
+    pixels = {index // channels for index in changed_channels}
+    px = [pixel % width for pixel in pixels]
+    py = [pixel // width for pixel in pixels]
+    return {
+        "changed_pixels": len(pixels),
+        "bbox": (min(px), min(py), max(px), max(py)),
+        "max_rgb_delta": max(abs(before[index] - after[index])
+                             for index in changed_channels),
+    }
+
+
+def _save_and_redaction_controls(src, tmp_dir, code_rect, supplier_rect):
+    """Distinguish save/recompression effects from image-pixel redaction."""
+    matrix = fitz.Matrix(2, 2)
+    original = fitz.open(src)
+    original_pix = original[0].get_pixmap(matrix=matrix, clip=code_rect, alpha=False)
+    original_samples = bytes(original_pix.samples)
+    original.close()
+
+    saved_path = tmp_dir / "control_saved_without_redaction.pdf"
+    saved = fitz.open(src)
+    saved.save(saved_path, garbage=4, deflate=True, clean=True)
+    saved.close()
+    reopened = fitz.open(saved_path)
+    saved_pix = reopened[0].get_pixmap(matrix=matrix, clip=code_rect, alpha=False)
+    reopened.close()
+
+    redacted_path = tmp_dir / "control_supplier_redaction.pdf"
+    controlled = fitz.open(src)
+    page = controlled[0]
+    # Stay well inside the supplier cell: this control proves whether
+    # PDF_REDACT_IMAGE_PIXELS itself rewrites remote code-column pixels.
+    far_supplier = fitz.Rect(supplier_rect.x0 + 10, supplier_rect.y0 + 10,
+                             supplier_rect.x1 - 10, supplier_rect.y1 - 10)
+    page.add_redact_annot(far_supplier, fill=(1, 1, 1), cross_out=False)
+    page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_PIXELS,
+                          graphics=fitz.PDF_REDACT_LINE_ART_NONE,
+                          text=fitz.PDF_REDACT_TEXT_REMOVE)
+    controlled.save(redacted_path, garbage=4, deflate=True, clean=True)
+    controlled.close()
+    reopened = fitz.open(redacted_path)
+    redacted_pix = reopened[0].get_pixmap(matrix=matrix, clip=code_rect, alpha=False)
+    reopened.close()
+
+    width, channels = original_pix.width, original_pix.n
+    return {
+        "save_without_redaction": _pixel_diff(
+            original_samples, bytes(saved_pix.samples), width, channels),
+        "far_supplier_pixel_redaction": _pixel_diff(
+            original_samples, bytes(redacted_pix.samples), width, channels),
+    }
 
 
 def _assert_table_result(src, dst, report, xs, ys, keep_boxes, redact_boxes, ocr=False):
@@ -166,7 +226,34 @@ def _assert_table_result(src, dst, report, xs, ys, keep_boxes, redact_boxes, ocr
         before_crop = source_page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=code_rect, alpha=False)
         after_crop = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=code_rect, alpha=False)
         assert (before_crop.width, before_crop.height, before_crop.n) == (after_crop.width, after_crop.height, after_crop.n)
-        assert hashlib.sha256(before_crop.samples).digest() == hashlib.sha256(after_crop.samples).digest()
+        controls = _save_and_redaction_controls(
+            src, Path(dst).parent, code_rect,
+            fitz.Rect(redact_boxes["supplier_cell"][0]),
+        )
+        assert controls["save_without_redaction"]["changed_pixels"] == 0, controls
+        assert controls["far_supplier_pixel_redaction"]["changed_pixels"] == 0, controls
+        code_diff = _pixel_diff(bytes(before_crop.samples), bytes(after_crop.samples),
+                                before_crop.width, before_crop.n)
+        glyph_diffs = {}
+        for token in ("1234567 (0)1)", "4143086 (0)1)", "2576244 (0)1)",
+                      "Заявка № Z1234567 (1342)"):
+            glyph_diffs[token] = []
+            for glyph_box in map(fitz.Rect, keep_boxes[token]):
+                before_glyph = source_page.get_pixmap(
+                    matrix=fitz.Matrix(2, 2), clip=glyph_box, alpha=False)
+                after_glyph = page.get_pixmap(
+                    matrix=fitz.Matrix(2, 2), clip=glyph_box, alpha=False)
+                glyph_diffs[token].append(_pixel_diff(
+                    bytes(before_glyph.samples), bytes(after_glyph.samples),
+                    before_glyph.width, before_glyph.n,
+                ))
+        assert code_diff["changed_pixels"] == 0, {
+            "processed_code_column_diff": code_diff,
+            "code_glyph_diffs": glyph_diffs,
+            "controls": controls,
+            "redaction_rects": report["redaction_rects"],
+            "code_zone": tuple(code_rect),
+        }
     supplier_text = region_text(fitz.Rect(xs[4], ys[1], xs[5], ys[-1]))
     assert not supplier_text.strip()
     all_text = page.get_text("text", textpage=textpage)
