@@ -24,3 +24,4 @@ MTR Anonymizer v17 RC1 — 02.09.2026
 - RC1 run #13: для horizontal grid доказана неизменность core/позиции/непрерывности/толщины при различии только anti-alias intersections; structural invariant заменил неверный byte-compare, а вертикальный CODE/SUPPLIER divider остался byte-exact.
 - RC1 run #14: все supplier/generic OCR redactions физически вычитаются из raster-safe grid KEEP guards; журнал содержит rule и original/expanded/final rectangles с расстояниями до каждой близкой линии.
 - RC1 run #15: OCR technical/required phrase/OL glyph bboxes стали отдельным KEEP-слоем между CODE и GRID; любой generic/supplier redaction физически clipping-уется против него с полным rule/span diagnostics.
+- RC1 run #16: TECH KEEP neighbours и required phrase+OL ограничены OCR-колонкой/строкой; исключён захват legal form/name поставщика широким phrase bbox, strong technical token в supplier защищает только себя.

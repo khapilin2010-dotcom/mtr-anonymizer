@@ -718,9 +718,19 @@ def _distance_to_grid_boundary(rect, grid):
     return max(rect.x0 - boundary, boundary - rect.x1, 0.0)
 
 
-def _ocr_technical_keep_areas(text_blocks, words, fitz):
+def _ocr_technical_keep_areas(text_blocks, words, fitz, supplier_zone=None,
+                              column_boundaries=None):
     """Map protected technical OCR fragments to their physical glyph boxes."""
     protected = []
+
+    supplier_zone = fitz.Rect(supplier_zone) if supplier_zone else None
+
+    def strong_technical(value):
+        return bool(re.search(
+            r"(?i)(?:IP\s*\d|(?:УХЛ|ХЛ)\s*\d|\bEx\b|\bDN\s*\d|"
+            r"\bPN\s*\d|\bГОСТ\s*\d|\b(?:ТУ|СТО|ТТП|TTP)\s*\d|"
+            r"\d+(?:[xх×]\d+)+|\d{1,3}Г\d|(?:ОЛ|OL)\d)", value
+        ))
 
     def add(label, value, boxes):
         if not boxes:
@@ -728,9 +738,20 @@ def _ocr_technical_keep_areas(text_blocks, words, fitz):
         rect = fitz.Rect(boxes[0])
         for box in boxes[1:]:
             rect |= fitz.Rect(box)
+        glyph_rect = fitz.Rect(rect)
         # OCR glyph boxes can be fractionally narrower than visible antialias.
         rect = fitz.Rect(rect.x0 - 0.8, rect.y0 - 0.8,
                          rect.x1 + 0.8, rect.y1 + 0.8)
+        if supplier_zone:
+            glyph_center = (glyph_rect.x0 + glyph_rect.x1) / 2
+            in_supplier = supplier_zone.x0 <= glyph_center <= supplier_zone.x1
+            if in_supplier and not strong_technical(value):
+                return
+            # A KEEP originating in the technical columns must never grow into
+            # the geometrically known supplier column through neighbour union
+            # or antialias padding.
+            if not in_supplier and glyph_rect.x1 <= supplier_zone.x0:
+                rect.x1 = min(rect.x1, supplier_zone.x0)
         key = tuple(round(number, 2) for number in rect)
         if not any(item["key"] == key for item in protected):
             protected.append({"key": key, "label": label, "text": value,
@@ -759,6 +780,36 @@ def _ocr_technical_keep_areas(text_blocks, words, fitz):
         r"ГОСТ|ТУ|СТО|ТТП|TTP|\d+(?:[xх×]\d+)+|[A-ZА-Я]{2,}[-./]\S*\d\S*)$"
     )
     normalized_words = [(fitz.Rect(*word[:4]), str(word[4])) for word in words]
+
+    def column_index(rect):
+        if not column_boundaries:
+            return None
+        center = (rect.x0 + rect.x1) / 2
+        return next((index for index, (left, right) in enumerate(
+            zip(column_boundaries, column_boundaries[1:]))
+            if left <= center <= right), None)
+
+    def adjacent_words(index, limit=3):
+        base_rect = normalized_words[index][0]
+        base_column = column_index(base_rect)
+        selected, previous = [], base_rect
+        for candidate_rect, _candidate in normalized_words[index + 1:]:
+            if len(selected) >= limit:
+                break
+            if base_column is not None and column_index(candidate_rect) != base_column:
+                continue
+            same_line = abs((candidate_rect.y0 + candidate_rect.y1) / 2 -
+                            (base_rect.y0 + base_rect.y1) / 2) <= max(
+                                base_rect.height, candidate_rect.height)
+            gap = candidate_rect.x0 - previous.x1
+            if not same_line or gap < -1 or gap > max(40, base_rect.height * 6):
+                if selected:
+                    break
+                continue
+            selected.append(candidate_rect)
+            previous = candidate_rect
+        return selected
+
     for index, (rect, word) in enumerate(normalized_words):
         if not technical_word.fullmatch(word):
             continue
@@ -766,7 +817,7 @@ def _ocr_technical_keep_areas(text_blocks, words, fitz):
         # Normative prefixes and Ex / DN / PN expressions commonly span the
         # next words; protect their concrete neighbouring glyph boxes too.
         if re.fullmatch(r"(?i)(?:ГОСТ|ТУ|СТО|ТТП|TTP|Ex\w*|DN|PN)", word):
-            boxes.extend(item[0] for item in normalized_words[index + 1:index + 4])
+            boxes.extend(adjacent_words(index))
         add("protected_ocr_word", word, boxes)
 
     # Required phrase is absolute KEEP even when split into OCR words. Start
@@ -774,8 +825,15 @@ def _ocr_technical_keep_areas(text_blocks, words, fitz):
     for index, (_rect, word) in enumerate(normalized_words):
         if not _ocr_word_matches(word, "комплектация"):
             continue
-        phrase = normalized_words[index:index + 10]
-        if any(re.search(r"(?i)(?:ОЛ|OL)\d", value) for _box, value in phrase):
+        phrase = []
+        phrase_column = column_index(normalized_words[index][0])
+        for box, value in normalized_words[index:index + 20]:
+            if phrase_column is not None and column_index(box) != phrase_column:
+                continue
+            phrase.append((box, value))
+            if re.search(r"(?i)(?:ОЛ|OL)\d", value):
+                break
+        if phrase and re.search(r"(?i)(?:ОЛ|OL)\d", phrase[-1][1]):
             add("required_phrase_ol", " ".join(value for _box, value in phrase),
                 [box for box, _value in phrase])
 
@@ -878,7 +936,11 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
         technical_keep = []
         if ocr_page and active_textpage is not None:
             ocr_words = page.get_text("words", textpage=active_textpage, sort=True)
-            technical_keep = _ocr_technical_keep_areas(text_blocks, ocr_words, fitz)
+            technical_keep = _ocr_technical_keep_areas(
+                text_blocks, ocr_words, fitz,
+                supplier_zone=table_diagnostics.get("supplier_column_zone"),
+                column_boundaries=table_diagnostics.get("vertical_boundaries"),
+            )
             report["technical_keep_rects"].extend(
                 tuple(item["rect"]) for item in technical_keep
             )
@@ -937,6 +999,13 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
         page_rects = []
         for supplier_rect in supplier_areas:
             safe_rects = _outside_protected_columns(supplier_rect, code_keep_rects, fitz)
+            supplier_technical_intersections = [
+                {"label": item["label"], "reason": item["label"],
+                 "text": item["text"], "keep_bbox": tuple(item["rect"]),
+                 "intersection_area": (supplier_rect & item["rect"]).get_area()}
+                for item in technical_keep
+                if (supplier_rect & item["rect"]).get_area() > 0
+            ]
             before_technical_clip = [fitz.Rect(rect) for rect in safe_rects]
             safe_rects = _outside_protected_rectangles(
                 safe_rects, [item["rect"] for item in technical_keep], fitz
@@ -978,6 +1047,8 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
                     "original_ocr_glyph_bbox": None,
                     "expanded_bbox": tuple(supplier_rect),
                     "final_safe_bbox": tuple(safe_rect),
+                    "text_span": "supplier cell",
+                    "technical_keep_intersections": supplier_technical_intersections,
                     "near_grid": near_grid,
                 })
                 report["redactions"] += 1

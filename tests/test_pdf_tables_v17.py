@@ -605,6 +605,9 @@ def test_ocr_table_columns_are_respected(tmp_path):
     assert diagnostics["code_column_zone"] and diagnostics["supplier_column_zone"], diagnostics
     assert diagnostics["grid_guards"] and report["grid_keep_rects"], diagnostics
     assert report["technical_keep_rects"] and report["technical_keep_diagnostics"], report
+    supplier_zone = fitz.Rect(xs[4], ys[1], xs[5], ys[-1])
+    assert not [item for item in report["technical_keep_diagnostics"]
+                if (fitz.Rect(item["rect"]) & supplier_zone).get_area() > 0], report
     assert all("label" in item and "expanded_bbox" in item and
                "final_safe_bbox" in item and "near_grid" in item
                for item in report["ocr_redaction_diagnostics"]), report
