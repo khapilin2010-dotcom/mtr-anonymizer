@@ -16,9 +16,13 @@ FONT = ("C:/Windows/Fonts/arial.ttf" if os.name == "nt"
 
 def _make_table_pdf(path: Path, scan: bool = False):
     doc = fitz.open()
-    page = doc.new_page(width=1200, height=420)
-    xs = [20, 60, 330, 560, 730, 910, 970, 1030, 1100, 1180]
-    ys = [20, 80, 220, 360]
+    # Keep the fixture deliberately roomy. Font metrics differ slightly
+    # between DejaVu on Linux and Arial on the Windows CI runner, so a tight
+    # textbox can silently omit its entire value on only one platform.
+    page_width, page_height = 1600, 620
+    page = doc.new_page(width=page_width, height=page_height)
+    xs = [20, 65, 440, 850, 1050, 1270, 1330, 1400, 1480, 1580]
+    ys = [20, 100, 340, 580]
     for x in xs:
         page.draw_line((x, ys[0]), (x, ys[-1]), width=0.7)
     for y in ys:
@@ -36,15 +40,24 @@ def _make_table_pdf(path: Path, scan: bool = False):
          "ТУ 1234-567-890 TEST-M2", "Заявка № Z1234567 (1342)",
          'ООО "ДРУГОЙ ТЕСТОВЫЙ ЗАВОД", ИНН 123456789012', "м", "2", "20", ""],
     ]
+    def insert_checked(rect, value, *, fontsize, label):
+        remaining = page.insert_textbox(rect, value, fontsize=fontsize,
+                                        fontname="dejavu", fontfile=FONT)
+        if value and remaining < 0:
+            raise AssertionError(
+                f"Synthetic fixture textbox overflow for {label}: "
+                f"remaining={remaining:.2f}, rect={tuple(rect)}, value={value!r}"
+            )
+
     for col, value in enumerate(headers):
-        page.insert_textbox((xs[col] + 2, 24, xs[col + 1] - 2, 76), value,
-                            fontsize=6, fontname="dejavu", fontfile=FONT)
+        insert_checked((xs[col] + 2, 24, xs[col + 1] - 2, 96), value,
+                       fontsize=6, label=f"header column {col + 1}")
     for row_no, values in enumerate(rows):
         for col, value in enumerate(values):
-            page.insert_textbox((xs[col] + 2, ys[row_no + 1] + 4,
-                                 xs[col + 1] - 2, ys[row_no + 2] - 4), value,
-                                fontsize=7 if col == 2 else 8,
-                                fontname="dejavu", fontfile=FONT)
+            insert_checked((xs[col] + 2, ys[row_no + 1] + 4,
+                            xs[col + 1] - 2, ys[row_no + 2] - 4), value,
+                           fontsize=7 if col == 2 else 8,
+                           label=f"row {row_no + 1}, column {col + 1}")
     keep_tokens = ("IP66", "УХЛ1", "Ex d IIC T6", "DN100", "PN1,6 МПа",
                    "09Г2С", "ГОСТ 12345", "100х50", "TEST.0001-АТТ.ОЛ1",
                    "TEST-M1", "ТУ 1234-567-890", "TEST-M2")
@@ -59,7 +72,7 @@ def _make_table_pdf(path: Path, scan: bool = False):
     if scan:
         pix = page.get_pixmap(matrix=fitz.Matrix(3, 3), alpha=False)
         image = pix.tobytes("png")
-        scanned = fitz.open(); target = scanned.new_page(width=1200, height=420)
+        scanned = fitz.open(); target = scanned.new_page(width=page_width, height=page_height)
         target.insert_image(target.rect, stream=image)
         scanned.save(path); scanned.close(); doc.close()
     else:
