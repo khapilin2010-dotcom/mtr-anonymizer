@@ -28,6 +28,7 @@
 - После Windows run #5 SOURCE bbox ищется сначала по исходному написанию и вариантам дефиса (`-`, soft hyphen, Unicode/non-breaking hyphen), затем безопасным fallback по геометрии канонически совпавшей последовательности слов. KEEP-набор, source self-validation и pixel/geometry assertions не ослаблены.
 - После Windows run #6 OCR table detector использует длинные растровые вертикальные/горизонтальные границы как основной структурный сигнал стандартной девятиколоночной СО. Колонки 4/5 выводятся из порядка границ независимо от OCR заголовков; отчёт содержит OCR header words с bbox, найденные границы, зоны кода/поставщика, режим и причину решения.
 - После Windows run #7 добавлены контроль сохранения без redaction и контроль удалённой supplier-области через `PDF_REDACT_IMAGE_PIXELS`, а также полный pixel diff (число, bbox, max RGB delta) и отдельные diff четырёх кодовых glyph-bbox. Локально оба контроля дали `changed_pixels=0`; production supplier-redaction получила двухпунктовый защитный отступ от общей границы с колонкой кода для исключения округления image pixels.
+- После Windows run #8 диагностика локализовала изменение на левой границе колонки 4. Для всех OCR-redaction абсолютный KEEP теперь расширяется на 2 pt с обеих сторон до геометрического split; отчёт показывает расстояние каждого rectangle и ближайший rectangle. Добавлены отдельные border/glyph diffs. Локальная имитация полного supplier+brand pixel-redaction с guard дала `changed_pixels=0` для всей code-column.
 
 ## Ещё требуется
 

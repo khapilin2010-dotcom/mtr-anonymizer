@@ -247,11 +247,36 @@ def _assert_table_result(src, dst, report, xs, ys, keep_boxes, redact_boxes, ocr
                     bytes(before_glyph.samples), bytes(after_glyph.samples),
                     before_glyph.width, before_glyph.n,
                 ))
+        assert all(
+            diff["changed_pixels"] == 0
+            for token_diffs in glyph_diffs.values() for diff in token_diffs
+        ), {"code_glyph_diffs": glyph_diffs,
+            "closest_code_redaction": report["closest_code_redaction"]}
+
+        def region_diff(rect):
+            before = source_page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=rect, alpha=False)
+            after = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=rect, alpha=False)
+            return _pixel_diff(bytes(before.samples), bytes(after.samples),
+                               before.width, before.n)
+
+        border_diffs = {
+            "left": region_diff(fitz.Rect(code_rect.x0, code_rect.y0,
+                                           code_rect.x0 + 1, code_rect.y1)),
+            "right": region_diff(fitz.Rect(code_rect.x1 - 1, code_rect.y0,
+                                            code_rect.x1, code_rect.y1)),
+            "top": region_diff(fitz.Rect(code_rect.x0, code_rect.y0,
+                                          code_rect.x1, code_rect.y0 + 1)),
+            "bottom": region_diff(fitz.Rect(code_rect.x0, code_rect.y1 - 1,
+                                             code_rect.x1, code_rect.y1)),
+        }
         assert code_diff["changed_pixels"] == 0, {
             "processed_code_column_diff": code_diff,
             "code_glyph_diffs": glyph_diffs,
+            "code_grid_border_diffs": border_diffs,
             "controls": controls,
             "redaction_rects": report["redaction_rects"],
+            "redaction_distances": report["code_column_redaction_distances"],
+            "closest_code_redaction": report["closest_code_redaction"],
             "code_zone": tuple(code_rect),
         }
     supplier_text = region_text(fitz.Rect(xs[4], ys[1], xs[5], ys[-1]))

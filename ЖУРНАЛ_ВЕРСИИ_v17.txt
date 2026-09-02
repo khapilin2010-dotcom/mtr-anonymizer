@@ -16,3 +16,4 @@ MTR Anonymizer v17 RC1 — 02.09.2026
 - RC1 run #5: поиск исходных bbox технических обозначений учитывает platform-specific soft/Unicode hyphen и fallback по координатам слов без изменения anonymizer или состава KEEP-проверок.
 - RC1 run #6: scanned СО определяется по растровой геометрии сетки, а не точности OCR заголовков; добавлена диагностика слов, границ, зон колонок и причины решения detector.
 - RC1 run #7: добавлены save/redaction pixel-controls и подробный diff колонки/четырёх кодов; supplier image-redaction отодвинута от общей границы с абсолютным KEEP для защиты от округления пикселей.
+- RC1 run #8: OCR KEEP расширен на двухпунктовый pixel guard с обеих сторон колонки кода; добавлены расстояния до redaction, ближайший rectangle и раздельные border/glyph pixel-diffs.

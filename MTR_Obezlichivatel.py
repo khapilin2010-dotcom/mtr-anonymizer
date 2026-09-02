@@ -668,6 +668,13 @@ def _outside_protected_columns(rect, protected, fitz):
     return [piece for piece in pieces if piece.width > 0.4 and piece.height > 0.4]
 
 
+def _rectangle_distance(rect, keep):
+    """Shortest page-coordinate distance between two rectangles."""
+    dx = max(keep.x0 - rect.x1, rect.x0 - keep.x1, 0.0)
+    dy = max(keep.y0 - rect.y1, rect.y0 - keep.y1, 0.0)
+    return (dx * dx + dy * dy) ** 0.5
+
+
 def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
     try:
         import fitz
@@ -686,7 +693,9 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
               "prevented_code_column_overlaps": 0,
               "code_column_unchanged": True, "code_column_values": [],
               "redaction_rects": [], "code_keep_rects": [],
-              "ocr_table_diagnostics": []}
+              "ocr_table_diagnostics": [],
+              "code_column_redaction_distances": [],
+              "closest_code_redaction": None}
 
     # OCR is page-level: native text pages stay untouched, image-only pages are
     # recognized in Russian + English and redacted on the original page image.
@@ -755,6 +764,16 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
         code_keep_rects, supplier_areas, code_before, table_mode, table_diagnostics = _table_redaction_zones(
             page, fitz, az, active_textpage
         )
+        if ocr_page and code_keep_rects:
+            # PDF_REDACT_IMAGE_PIXELS rounds rectangles to the source image's
+            # pixel grid. Protect a guard on both sides of column 4 so a
+            # redaction in column 3 or 5 cannot rewrite even its anti-aliased
+            # border pixels after outward rounding.
+            guard = 2.0
+            code_keep_rects = [fitz.Rect(
+                max(page.rect.x0, rect.x0 - guard), rect.y0,
+                min(page.rect.x1, rect.x1 + guard), rect.y1,
+            ) for rect in code_keep_rects]
         if ocr_page:
             table_diagnostics["page"] = page_no
             table_diagnostics["mode"] = table_mode
@@ -961,6 +980,19 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
                         report["redactions"] += 1
 
         if page_rects:
+            for redaction_rect in page_rects:
+                if not code_keep_rects:
+                    continue
+                nearest_keep = min(code_keep_rects,
+                                   key=lambda keep: _rectangle_distance(redaction_rect, keep))
+                distance = _rectangle_distance(redaction_rect, nearest_keep)
+                item = {"page": page_no, "redaction_rect": tuple(redaction_rect),
+                        "nearest_code_keep_rect": tuple(nearest_keep),
+                        "distance": distance}
+                report["code_column_redaction_distances"].append(item)
+                closest = report["closest_code_redaction"]
+                if closest is None or distance < closest["distance"]:
+                    report["closest_code_redaction"] = item
             try:
                 page.apply_redactions(
                     images=(fitz.PDF_REDACT_IMAGE_PIXELS if ocr_page else fitz.PDF_REDACT_IMAGE_NONE),
