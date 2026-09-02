@@ -1,4 +1,6 @@
 import os
+import hashlib
+import re
 from pathlib import Path
 
 import fitz
@@ -61,31 +63,63 @@ def _assert_table_result(src, dst, report, xs, ys, ocr=False):
     for redaction in map(fitz.Rect, report["redaction_rects"]):
         for keep in map(fitz.Rect, report["code_keep_rects"]):
             assert (redaction & keep).get_area() == 0
+    source = fitz.open(src); source_page = source[0]
     result = fitz.open(dst); page = result[0]
     textpage = page.get_textpage_ocr(language="rus+eng", dpi=300, full=True) if ocr else None
     words = page.get_text("words", textpage=textpage, sort=True) if ocr else None
+    source_textpage = source_page.get_textpage_ocr(language="rus+eng", dpi=300, full=True) if ocr else None
+    source_words = source_page.get_text("words", textpage=source_textpage, sort=True) if ocr else None
 
     def region_text(rect):
         if not ocr:
             return page.get_textbox(rect)
         return " ".join(word[4] for word in words if fitz.Rect(*word[:4]).intersects(rect))
 
-    code_text = region_text(fitz.Rect(xs[3], ys[1], xs[4], ys[-1]))
-    assert "1234567 (0)1)" in code_text
-    assert "4143086 (0)1)" in code_text
-    assert "2576244 (0)1)" in code_text
-    assert "Заявка № Z1234567 (1342)" in code_text
+    def source_region_text(rect):
+        if not ocr:
+            return source_page.get_textbox(rect)
+        return " ".join(word[4] for word in source_words if fitz.Rect(*word[:4]).intersects(rect))
+
+    def normalized(value):
+        return " ".join(value.replace("\u00ad", "").replace("\r", "\n").split())
+
+    code_rect = fitz.Rect(xs[3], ys[1], xs[4], ys[-1])
+    code_text = normalized(region_text(code_rect))
+    source_code_text = normalized(source_region_text(code_rect))
+    if not ocr:
+        # Native text layers must remain byte-for-byte equivalent after basic
+        # extraction whitespace normalization.
+        assert code_text == source_code_text
+        assert "Заявка № Z1234567 (1342)" in code_text
+    else:
+        # OCR may read an unchanged glyph Z as 7. Pixel identity below is the
+        # authoritative KEEP check; OCR remains supporting presence evidence.
+        for digits in ("1234567", "4143086", "2576244"):
+            assert digits in source_code_text and digits in code_text
+        before_crop = source_page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=code_rect, alpha=False)
+        after_crop = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=code_rect, alpha=False)
+        assert (before_crop.width, before_crop.height, before_crop.n) == (after_crop.width, after_crop.height, after_crop.n)
+        assert hashlib.sha256(before_crop.samples).digest() == hashlib.sha256(after_crop.samples).digest()
     supplier_text = region_text(fitz.Rect(xs[4], ys[1], xs[5], ys[-1]))
     assert not supplier_text.strip()
     all_text = page.get_text("text", textpage=textpage)
-    normalized_text = " ".join(all_text.split())
+    source_text = source_page.get_text("text", textpage=source_textpage)
+    normalized_text = normalized(all_text)
+    normalized_source_text = normalized(source_text)
     for keep in ("IP66", "УХЛ1", "Ex d IIC T6", "DN100", "PN1,6 МПа",
-                 "09Г2С", "ГОСТ 12345", "100х50", "TEST-M1",
+                 "09Г2С", "ГОСТ 12345", "100х50",
                  "Комплектация по обосновывающему документу", "TEST.0001-АТТ.ОЛ1"):
         assert keep in normalized_text
+    # PDF extractors may represent the visual hyphen as U+00AD. Compare the
+    # model semantically after removing only separators and whitespace, first
+    # proving that it existed in the source and then that it survived.
+    source_model_key = re.sub(r"[\s\-\u00ad]", "", normalized_source_text)
+    result_model_key = re.sub(r"[\s\-\u00ad]", "", normalized_text)
+    assert "TESTM1" in source_model_key
+    assert "TESTM1" in result_model_key
     assert "ТУ 1234-567-890 TEST-M2" in normalized_text
     assert "ТЕСТОВЫЙ ЗАВОД" not in all_text and "1234567890" not in all_text
-    result.close()
+    result.close(); source.close()
 
 
 def test_native_table_columns_are_respected(tmp_path):
