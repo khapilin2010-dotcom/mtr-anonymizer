@@ -280,7 +280,24 @@ def _assert_table_result(src, dst, report, xs, ys, keep_boxes, redact_boxes, ocr
             "code_zone": tuple(code_rect),
         }
     supplier_text = region_text(fitz.Rect(xs[4], ys[1], xs[5], ys[-1]))
-    assert not supplier_text.strip()
+    supplier_residual_words = ([{"text": word[4], "bbox": tuple(word[:4]),
+                                 "distance_from_code_column": word[0] - xs[4]}
+                                for word in (words or [])
+                                if fitz.Rect(*word[:4]).intersects(
+                                    fitz.Rect(xs[4], ys[1], xs[5], ys[-1]))])
+    assert not supplier_text.strip(), {
+        "supplier_text": supplier_text,
+        "supplier_residual_words": supplier_residual_words,
+        "supplier_column_boundary": xs[4],
+        "supplier_redaction_rects": [
+            rect for rect in report["redaction_rects"]
+            if fitz.Rect(rect).intersects(fitz.Rect(xs[4], ys[1], xs[5], ys[-1]))
+        ],
+        "source_supplier_words": report["ocr_table_diagnostics"][0].get(
+            "supplier_source_words", []) if ocr else [],
+        "code_keep_guard": report["ocr_table_diagnostics"][0].get(
+            "code_keep_guard") if ocr else None,
+    }
     all_text = page.get_text("text", textpage=textpage)
     source_text = source_page.get_text("text", textpage=source_textpage)
     normalized_text = normalized(all_text)

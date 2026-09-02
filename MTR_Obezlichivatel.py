@@ -545,6 +545,14 @@ def _table_redaction_zones(page, fitz, az, textpage=None):
             diagnostics["code_column_zone"] = (code_x0, header_bottom, code_x1, grid_y[-1])
             diagnostics["supplier_column_zone"] = (supplier_x0, header_bottom,
                                                      supplier_x1, grid_y[-1])
+            diagnostics["supplier_source_words"] = [
+                {"text": word, "bbox": tuple(rect),
+                 "distance_from_code_boundary": rect.x0 - code_x1}
+                for rect, word in normalized
+                if rect.y0 >= header_bottom and
+                rect.intersects(fitz.Rect(supplier_x0, header_bottom,
+                                           supplier_x1, grid_y[-1]))
+            ]
             for top, bottom in zip(grid_y[1:-1], grid_y[2:]):
                 code_rect = fitz.Rect(code_x0, top, code_x1, bottom)
                 code_cells.append(code_rect)
@@ -552,12 +560,12 @@ def _table_redaction_zones(page, fitz, az, textpage=None):
                     word for rect, word in normalized if rect.intersects(code_rect)
                 ))
                 # Clear the complete supplier cell while retaining its grid.
-                # Image redaction rounds page coordinates to source-image
-                # pixels. Keep a two-point safety gutter at the shared code /
-                # supplier border so that rounding cannot rewrite its
-                # anti-aliased grid pixels or anything in the KEEP column.
+                # Start just beyond the raster grid stroke. The asymmetric
+                # code KEEP guard below protects the border itself; using a
+                # second two-point inset here would leave the first supplier
+                # glyph partially outside physical image redaction.
                 supplier_areas.append(fitz.Rect(
-                    supplier_x0 + 2.0, top + 0.8,
+                    supplier_x0 + 1.0, top + 0.8,
                     supplier_x1 - 0.8, bottom - 0.8,
                 ))
             diagnostics["reason"] = "nine-column raster grid"
@@ -765,15 +773,21 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
             page, fitz, az, active_textpage
         )
         if ocr_page and code_keep_rects:
-            # PDF_REDACT_IMAGE_PIXELS rounds rectangles to the source image's
-            # pixel grid. Protect a guard on both sides of column 4 so a
-            # redaction in column 3 or 5 cannot rewrite even its anti-aliased
-            # border pixels after outward rounding.
-            guard = 2.0
+            # Run #8 proved that the changed pixels were exclusively on the
+            # *left* code-column border (a redaction originating in column 3).
+            # Keep two points there. On the supplier side one raster-grid
+            # stroke plus raster rounding (1.0 pt, verified by the pixel
+            # boundary control) is sufficient and still lets
+            # image redaction cover a supplier glyph beginning at cell x + 2.
+            left_guard, right_guard = 2.0, 1.0
             code_keep_rects = [fitz.Rect(
-                max(page.rect.x0, rect.x0 - guard), rect.y0,
-                min(page.rect.x1, rect.x1 + guard), rect.y1,
+                max(page.rect.x0, rect.x0 - left_guard), rect.y0,
+                min(page.rect.x1, rect.x1 + right_guard), rect.y1,
             ) for rect in code_keep_rects]
+            table_diagnostics["code_keep_guard"] = {
+                "left": left_guard, "right": right_guard,
+                "reason": "left boundary pixel diff; supplier glyph clearance",
+            }
         if ocr_page:
             table_diagnostics["page"] = page_no
             table_diagnostics["mode"] = table_mode
