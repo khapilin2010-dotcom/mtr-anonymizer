@@ -1,4 +1,5 @@
 import csv
+import re
 from pathlib import Path
 
 import pytest
@@ -147,3 +148,17 @@ def test_all_expert_review_proposals(az):
         if actual != expected:
             mismatches[code] = {"expected": expected, "actual": actual}
     assert not mismatches
+
+
+def test_v18_simplified_excel_legal_entities_and_green_gate(az):
+    samples = (
+        'Кабель ООО "Газпром добыча Иркутск" ТУ 16.К01-49-2005',
+        'Муфта [ООО "Сервисный центр СБМ"] ТУ 1234-567',
+        'Прибор ООО.НПО.ФСА ТУ 12-34',
+    )
+    for source in samples:
+        result = az.anonymize(source)
+        assert not re.search(r'(?i)\b(?:ТУ|ООО|ПАО|ОАО|ЗАО|ИНН)\b', result["text"]), result
+        assert result["removed"], result
+    unsafe = az.anonymize('Кабель неизвестного ПАО без подтверждённого названия')
+    assert unsafe["status"] == "ЖЁЛТЫЙ"

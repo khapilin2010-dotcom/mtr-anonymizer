@@ -18,9 +18,9 @@ from tkinter import filedialog, messagebox, ttk
 from mtr_core import Anonymizer, PDF_PROTECTED_RES, keep_signature
 
 APP_TITLE = "Обезличивание МТР"
-APP_VERSION = "17.0 RC1"
+APP_VERSION = "18.0 SIMPLIFIED"
 APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "MTR_Obezlichivatel"
-LOG_FILE = APP_DIR / "mtr_v17.log"
+LOG_FILE = APP_DIR / "mtr_v18.log"
 CONFIG_FILE = APP_DIR / "config.json"
 
 
@@ -486,6 +486,8 @@ def _table_redaction_zones(page, fitz, az, textpage=None):
                    "horizontal_boundaries": [], "code_column_zone": None,
                    "supplier_column_zone": None, "cell_rects": [],
                    "allowed_delete_zones": [], "absolute_keep_zones": [],
+                   "type_clear_areas": [], "type_keep_rects": [],
+                   "innovation_rows": [],
                    "reason": "not evaluated"}
     try:
         tables = page.find_tables().tables
@@ -499,10 +501,19 @@ def _table_redaction_zones(page, fitz, az, textpage=None):
             supplier_col = next((i for i, key in enumerate(keys) if "поставщик" in key), None)
             if code_col is None or supplier_col is None:
                 continue
-            description_cols = [i for i, key in enumerate(keys) if
-                                "наименование" in key or "техническ" in key or
-                                "тип марка" in key]
+            name_cols = [i for i, key in enumerate(keys) if
+                         "наименование" in key or "техническ" in key]
+            type_cols = [i for i, key in enumerate(keys) if "тип марка" in key]
             for row_no in range(header_row + 1, table.row_count):
+                row_text = " ".join(page.get_textbox(fitz.Rect(raw)).strip()
+                                    for raw in table.rows[row_no].cells if raw)
+                innovation = bool(re.search(r"(?i)инновационн\w*\s+оборудован", row_text))
+                if innovation:
+                    row_cells = [fitz.Rect(raw) for raw in table.rows[row_no].cells if raw]
+                    if row_cells:
+                        row_rect = fitz.Rect(row_cells[0])
+                        for item in row_cells[1:]: row_rect |= item
+                        diagnostics["innovation_rows"].append(tuple(row_rect))
                 for col_no, raw_cell in enumerate(table.rows[row_no].cells):
                     if not raw_cell:
                         continue
@@ -510,12 +521,39 @@ def _table_redaction_zones(page, fitz, az, textpage=None):
                     diagnostics["cell_rects"].append({
                         "row": row_no, "column": col_no, "rect": tuple(cell)
                     })
-                    if col_no in description_cols:
+                    if innovation:
+                        diagnostics["absolute_keep_zones"].append({
+                            "role": "innovation_row", "row": row_no,
+                            "column": col_no, "rect": tuple(cell),
+                        })
+                    elif col_no in name_cols:
                         diagnostics["allowed_delete_zones"].append({
                             "role": "description", "row": row_no, "column": col_no,
                             "rect": tuple(fitz.Rect(cell.x0 + 0.5, cell.y0 + 0.5,
                                                     cell.x1 - 0.5, cell.y1 - 0.5)),
                         })
+                    elif col_no in type_cols:
+                        inner = fitz.Rect(cell.x0 + 0.8, cell.y0 + 0.8,
+                                          cell.x1 - 0.8, cell.y1 - 0.8)
+                        cell_text = page.get_textbox(cell)
+                        keep_re = re.compile(
+                            r"(?i)ГОСТ(?:\s+Р)?\s*[0-9][0-9.\-–—/]*|"
+                            r"Комплектация\s+по\s+обосновывающему\s+документу\s+\S*(?:ОЛ|OL)\d+"
+                        )
+                        for match in keep_re.finditer(cell_text):
+                            for found in page.search_for(match.group(0)):
+                                clipped = fitz.Rect(found) & cell
+                                if not clipped.is_empty:
+                                    diagnostics["type_keep_rects"].append({
+                                        "label": "gost_or_required_ol", "text": match.group(0),
+                                        "rect": tuple(clipped),
+                                    })
+                        if keep_re.sub("", cell_text).strip():
+                            diagnostics["allowed_delete_zones"].append({
+                                "role": "type_mark", "row": row_no,
+                                "column": col_no, "rect": tuple(inner),
+                            })
+                            diagnostics["type_clear_areas"].append(tuple(inner))
                 code_cell = table.rows[row_no].cells[code_col]
                 supplier_cell = table.rows[row_no].cells[supplier_col]
                 if code_cell:
@@ -526,15 +564,10 @@ def _table_redaction_zones(page, fitz, az, textpage=None):
                         "role": "product_code", "row": row_no, "column": code_col,
                         "rect": tuple(code_rect),
                     })
-                if supplier_cell:
+                if supplier_cell and not innovation:
                     cell_rect = fitz.Rect(supplier_cell)
                     supplier_text = page.get_textbox(cell_rect).strip()
-                    _identified, supplier_inn = az.identify_in_text(supplier_text)
-                    supplier_org = bool(supplier_inn or re.search(
-                        r'(?i)\b(?:ООО|АО|ЗАО|ОАО|ПАО|НПО|НПП|ФГУП|ИНН|завод|производитель|поставщик)\b',
-                        supplier_text,
-                    ))
-                    if supplier_text and supplier_org:
+                    if supplier_text:
                         # Keep a small inset to preserve vector grid lines.
                         delete_rect = fitz.Rect(
                             cell_rect.x0 + 0.8, cell_rect.y0 + 0.8,
@@ -582,17 +615,38 @@ def _table_redaction_zones(page, fitz, az, textpage=None):
             ]
             for top, bottom in zip(grid_y[1:-1], grid_y[2:]):
                 row_no = len(code_cells) + 1
+                row_rect = fitz.Rect(grid_x[0], top, grid_x[-1], bottom)
+                row_words = [word for rect, word in normalized if rect.intersects(row_rect)]
+                innovation = (
+                    any(_ocr_word_matches(word, "инновационное") for word in row_words) and
+                    any(_ocr_word_matches(word, "оборудование") for word in row_words)
+                )
+                if innovation:
+                    diagnostics["innovation_rows"].append(tuple(row_rect))
                 for col_no, (left, right) in enumerate(zip(grid_x, grid_x[1:])):
                     cell = fitz.Rect(left, top, right, bottom)
                     diagnostics["cell_rects"].append({
                         "row": row_no, "column": col_no, "rect": tuple(cell)
                     })
-                    if col_no in (1, 2):
+                    if innovation:
+                        diagnostics["absolute_keep_zones"].append({
+                            "role": "innovation_row", "row": row_no,
+                            "column": col_no, "rect": tuple(cell),
+                        })
+                    elif col_no == 1:
                         diagnostics["allowed_delete_zones"].append({
                             "role": "description", "row": row_no, "column": col_no,
                             "rect": tuple(fitz.Rect(left + 1.0, top + 2.0,
                                                     right - 1.0, bottom - 2.0)),
                         })
+                    elif col_no == 2:
+                        inner = fitz.Rect(left + 1.0, top + 2.0,
+                                           right - 1.0, bottom - 2.0)
+                        diagnostics["allowed_delete_zones"].append({
+                            "role": "type_mark", "row": row_no, "column": col_no,
+                            "rect": tuple(inner),
+                        })
+                        diagnostics["type_clear_areas"].append(tuple(inner))
                 code_rect = fitz.Rect(code_x0, top, code_x1, bottom)
                 code_cells.append(code_rect)
                 diagnostics["absolute_keep_zones"].append({
@@ -608,15 +662,16 @@ def _table_redaction_zones(page, fitz, az, textpage=None):
                 # second two-point inset here would leave the first supplier
                 # glyph partially outside physical image redaction. Horizontal
                 # borders have room for a two-point guard before text begins.
-                supplier_rect = fitz.Rect(
-                    supplier_x0 + 1.0, top + 2.0,
-                    supplier_x1 - 0.8, bottom - 2.0,
-                )
-                supplier_areas.append(supplier_rect)
-                diagnostics["allowed_delete_zones"].append({
-                    "role": "supplier", "row": row_no, "column": 4,
-                    "rect": tuple(supplier_rect),
-                })
+                if not innovation:
+                    supplier_rect = fitz.Rect(
+                        supplier_x0 + 1.0, top + 2.0,
+                        supplier_x1 - 0.8, bottom - 2.0,
+                    )
+                    supplier_areas.append(supplier_rect)
+                    diagnostics["allowed_delete_zones"].append({
+                        "role": "supplier", "row": row_no, "column": 4,
+                        "rect": tuple(supplier_rect),
+                    })
             diagnostics["reason"] = "nine-column raster grid"
             return code_cells, supplier_areas, code_values, "ocr-grid-columns", diagnostics
 
@@ -995,9 +1050,21 @@ def _ocr_technical_keep_areas(text_blocks, words, fitz, supplier_zone=None,
         if not technical_word.fullmatch(word):
             continue
         boxes = [rect]
+        if re.fullmatch(r"(?i)ГОСТ", word):
+            neighbours = adjacent_word_items(index, limit=2)
+            selected = []
+            if neighbours and re.fullmatch(r"(?i)Р", neighbours[0][1]):
+                selected.append(neighbours[0])
+                if len(neighbours) > 1:
+                    selected.append(neighbours[1])
+            elif neighbours:
+                selected.append(neighbours[0])
+            add("gost_expression", " ".join([word] + [value for _box, value in selected]),
+                [rect] + [box for box, _value in selected])
+            continue
         # Normative prefixes and Ex / DN / PN expressions commonly span the
         # next words; protect their concrete neighbouring glyph boxes too.
-        if re.fullmatch(r"(?i)(?:ГОСТ|ТУ|СТО|ТТП|TTP|DN|PN)", word):
+        if re.fullmatch(r"(?i)(?:ТУ|СТО|ТТП|TTP|DN|PN)", word):
             boxes.extend(adjacent_words(index))
         add("protected_ocr_word", word, boxes)
 
@@ -1036,6 +1103,7 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
               "tu_continuations": 0, "context_models": 0, "ocr_pages": 0,
               "ocr_failed_pages": 0, "review": False, "table_pages": 0,
               "supplier_cells_redacted": 0, "code_column_intersections": 0,
+              "type_cells_simplified": 0, "innovation_rows_untouched": 0,
               "prevented_code_column_overlaps": 0,
               "prevented_grid_overlaps": 0,
               "code_column_unchanged": True, "code_column_values": [],
@@ -1132,6 +1200,10 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
                 supplier_zone=table_diagnostics.get("supplier_column_zone"),
                 column_boundaries=table_diagnostics.get("vertical_boundaries"),
             )
+            # v18 SIMPLIFIED: TU is always deletable. It must not become a
+            # second-line technical KEEP in either description or type cells.
+            technical_keep = [item for item in technical_keep
+                              if not re.match(r"(?i)^\s*ТУ\b", item["text"])]
             report["technical_keep_rects"].extend(
                 tuple(item["rect"]) for item in technical_keep
             )
@@ -1190,10 +1262,45 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
             report["ocr_table_diagnostics"].append(table_diagnostics)
         if table_mode != "none":
             report["table_pages"] += 1
+            report["innovation_rows_untouched"] += len(
+                table_diagnostics.get("innovation_rows", []))
             report["code_column_values"].extend(code_before)
             report["code_keep_rects"].extend([tuple(rect) for rect in code_keep_rects])
 
         page_rects = []
+        type_keep_items = list(table_diagnostics.get("type_keep_rects", []))
+        for item in technical_keep:
+            value = item["text"]
+            if (re.search(r"(?i)\bГОСТ(?:\s+Р)?\s*\d", value) or
+                    item["label"] == "required_phrase_ol"):
+                type_keep_items.append({"label": item["label"], "text": value,
+                                        "rect": tuple(item["rect"])})
+        for type_rect_value in table_diagnostics.get("type_clear_areas", []):
+            type_rect = fitz.Rect(type_rect_value)
+            safe_rects = _inside_allowed_delete_zones(
+                type_rect, type_rect, allowed_delete_zones, fitz,
+                roles=("type_mark",),
+            )
+            relevant_keeps = [fitz.Rect(item["rect"]) for item in type_keep_items
+                              if (fitz.Rect(item["rect"]) & type_rect).get_area() > 0]
+            safe_rects = _outside_protected_rectangles(safe_rects, relevant_keeps, fitz)
+            safe_rects = _outside_protected_rectangles(
+                safe_rects, [item["rect"] for item in grid_guards], fitz)
+            for safe_rect in safe_rects:
+                page.add_redact_annot(safe_rect, fill=(1, 1, 1), cross_out=False)
+                page_rects.append(safe_rect)
+                report["redaction_rects"].append(tuple(safe_rect))
+                report["redactions"] += 1
+                report["ocr_redaction_diagnostics"].append({
+                    "page": page_no, "label": "type_cell_simplified",
+                    "original_ocr_glyph_bbox": None,
+                    "expanded_bbox": tuple(type_rect),
+                    "final_safe_bbox": tuple(safe_rect),
+                    "text_span": "type cell except ГОСТ / required phrase + OL",
+                    "technical_keep_intersections": [], "near_technical_keep": [],
+                    "near_grid": [],
+                })
+            report["type_cells_simplified"] += 1
         for supplier_rect in supplier_areas:
             safe_rects = _inside_allowed_delete_zones(
                 supplier_rect, supplier_rect, allowed_delete_zones, fitz,
@@ -1308,6 +1415,16 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
                     factory, inn = marker_factory, marker_inn
 
             spans = az.redaction_spans(text, code=code, factory=factory if inn else "")
+
+            # v18 SIMPLIFIED PDF policy: every TU reference is removable in
+            # graph 2, independent of whether it could also be interpreted as
+            # a technical standard. Cell permissions below prevent this rule
+            # from escaping the description column.
+            for tu_match in re.finditer(
+                    r"(?i)(?<![\w])(?:по\s+типу\s+)?ТУ(?:\s+|[-–—№:]\s*)"
+                    r"[0-9A-Za-zА-Яа-яЁё][0-9A-Za-zА-Яа-яЁё./\-–—]*",
+                    text):
+                spans.append((tu_match.start(), tu_match.end(), "v18:any_tu"))
 
             # OCR may interleave neighbouring table columns between the label
             # "ИНН" and its digits (for example: "ИНН м 2 0.074 ... 5904184047").

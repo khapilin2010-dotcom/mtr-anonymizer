@@ -1,8 +1,8 @@
-# Обезличивание МТР — v17 RC1
+# Обезличивание МТР — v18 SIMPLIFIED
 
 Windows-приложение для консервативного обезличивания Excel (`.xlsx`, `.xls`,
 `.xlsm`) и табличных PDF. Готовый ZIP собирается workflow
-**Windows release v17 RC1** и публикуется как artifact
-`MTR_Obezlichivatel_v17_RC1_Windows`.
+**Windows release v18 SIMPLIFIED** и публикуется как artifact
+`MTR_Obezlichivatel_v18_SIMPLIFIED_Windows`.
 
-См. пользовательскую инструкцию: [`ИНСТРУКЦИЯ_v17.md`](ИНСТРУКЦИЯ_v17.md).
+См. пользовательскую инструкцию: [`ИНСТРУКЦИЯ_v18.md`](ИНСТРУКЦИЯ_v18.md).

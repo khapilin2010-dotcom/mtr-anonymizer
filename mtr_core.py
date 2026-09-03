@@ -24,6 +24,16 @@ CONFIRMED_GLOBAL_BRAND_RE = re.compile(
     r"(?i)(?<![\w])(?:" + "|".join(re.escape(x) for x in CONFIRMED_GLOBAL_BRANDS)
     + r")(?:-[A-Za-zА-Яа-яЁё0-9._/]+)?(?![\w])"
 )
+SIMPLIFIED_LEGAL_ORG_RE = re.compile(
+    r'(?i)\[?\s*\b(?:ООО|АО|ПАО|ОАО|ЗАО|НПО|НПП)\b(?:[.\s]+(?:НПО|НПП))?'
+    r'[.\s]*(?:"[^"\n]{1,160}"|«[^»\n]{1,160}»|ФСА\b)'
+    r'(?:\s*,?\s*ИНН\s*\d{10,12})?\s*\]?'
+)
+SIMPLIFIED_RESIDUAL_RE = re.compile(
+    r'(?i)(?:\bТУ(?:\s+|[-–—№:]\s*)[0-9A-Za-zА-Яа-яЁё]|'
+    r'\b(?:ООО|ПАО|ОАО|ЗАО)\b|\bИНН\s*\d|'
+    r'(?:ВО)?№\s*\S+\s+от\s+\d)'
+)
 # Verified short PDF designations. They are allowed as manufacturer-free PDF
 # fallbacks only with the strict patterns below.
 PDF_SHORT_UNIQUE_TRIGGERS = {"КШГ", "ПМТД"}
@@ -547,6 +557,12 @@ class Anonymizer:
         def apply_once(value: str, active_factory: str, active_inn: str):
             s = value
             applied_local = []
+            s, technology_count = TECHNOLOGY_ORG_RE.subn("; ", s)
+            if technology_count:
+                applied_local.append("организация по технологии")
+            s, legal_count = SIMPLIFIED_LEGAL_ORG_RE.subn(" ", s)
+            if legal_count:
+                applied_local.append("юридическое лицо")
             s, brand_count = CONFIRMED_GLOBAL_BRAND_RE.subn(
                 lambda match: (applied_local.append(match.group(0)) or " "), s
             )
@@ -670,6 +686,8 @@ class Anonymizer:
             safety_failures.append("остался подтверждённый удаляемый признак")
         if LETTER_TAIL_RE.search(s):
             safety_failures.append("остались реквизиты письма")
+        if SIMPLIFIED_RESIDUAL_RE.search(s):
+            safety_failures.append("остался ТУ/юрлицо/ИНН/реквизит письма")
         repeat_text, _repeat_applied = apply_once(s, resolved_factory, inn)
         if repeat_text != s:
             safety_failures.append("повторный прогон изменяет результат")

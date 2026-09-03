@@ -103,10 +103,10 @@ def _make_table_pdf(path: Path, scan: bool = False):
     # Keep the fixture deliberately roomy. Font metrics differ slightly
     # between DejaVu on Linux and Arial on the Windows CI runner, so a tight
     # textbox can silently omit its entire value on only one platform.
-    page_width, page_height = 1600, 620
+    page_width, page_height = 1600, 940
     page = doc.new_page(width=page_width, height=page_height)
     xs = [20, 65, 440, 850, 1050, 1270, 1330, 1400, 1480, 1580]
-    ys = [20, 100, 340, 580]
+    ys = [20, 100, 300, 500, 700, 900]
     for x in xs:
         page.draw_line((x, ys[0]), (x, ys[-1]), width=0.7)
     for y in ys:
@@ -116,13 +116,19 @@ def _make_table_pdf(path: Path, scan: bool = False):
                "Код продукции", "Поставщик", "Ед.", "Количество",
                "Масса", "Примечание"]
     rows = [
-        ["1", "Клапан Армтел IP66 УХЛ1 Ex d IIC T6 DN100 PN1,6 МПа сталь 09Г2С 100х50 мм",
-         "Комплектация по обосновывающему документу TEST.0001-АТТ.ОЛ1\nМодель TEST-M1 ГОСТ 12345",
+        ["1", "Клапан Армтел ТУ 1111-222-333 IP66 УХЛ1 Ex d IIC T6 DN100 PN1,6 МПа сталь 09Г2С 100х50 мм",
+         "ПВСнг(А)-LS ТУ 16.К01-49-2005",
          "1234567 (0)1)\n4143086 (0)1)\n2576244 (0)1)",
          'АО "ТЕСТОВЫЙ ЗАВОД", ИНН 1234567890', "шт.", "1", "10", ""],
-        ["2", "Труба 57х3,5 сталь 20 давление 1,6 МПа температура -60...+100С",
-         "ТУ 1234-567-890 TEST-M2", "Заявка № Z1234567 (1342)",
+        ["2", "Труба 57х3,5 сталь 20 давление 1,6 МПа температура -60...+100С ТУ 1234-567-890",
+         "ПуГВнг(А)-LS ГОСТ 31947-2012", "Заявка № Z1234567 (1342)",
          'ООО "ДРУГОЙ ТЕСТОВЫЙ ЗАВОД", ИНН 123456789012', "м", "2", "20", ""],
+        ["3", "Кабель IP66 ТУ 9999-001-001",
+         "УЗКМ TEST-M2 ТУ 12-34 Комплектация по обосновывающему документу TEST-ЭГ.ОЛ1",
+         "3909960 (0)1)", 'ПАО "ТРЕТИЙ ЗАВОД", ИНН 1234567890', "шт.", "1", "5", ""],
+        ["4", "Инновационное оборудование ТУ 7777-777 БрендТест",
+         "МАРКА-ИННО ТУ 88-99", "4702111 (2358)",
+         'АО "ИННОВАЦИОННЫЙ ПОСТАВЩИК", ИНН 9876543210', "шт.", "1", "7", ""],
     ]
     def insert_checked(rect, value, *, fontsize, label):
         remaining = page.insert_textbox(rect, value, fontsize=fontsize,
@@ -143,25 +149,28 @@ def _make_table_pdf(path: Path, scan: bool = False):
                            fontsize=7 if col == 2 else 8,
                            label=f"row {row_no + 1}, column {col + 1}")
     keep_tokens = ("IP66", "УХЛ1", "Ex d IIC T6", "DN100", "PN1,6 МПа",
-                   "09Г2С", "ГОСТ 12345", "100х50", "TEST.0001-АТТ.ОЛ1",
-                   "TEST-M1", "ТУ 1234-567-890", "TEST-M2",
+                   "09Г2С", "ГОСТ 31947-2012", "100х50", "TEST-ЭГ.ОЛ1",
+                   "Комплектация по обосновывающему документу TEST-ЭГ.ОЛ1",
                    "1234567 (0)1)", "4143086 (0)1)", "2576244 (0)1)",
-                   "Заявка № Z1234567 (1342)")
+                   "Заявка № Z1234567 (1342)", "3909960 (0)1)",
+                   "4702111 (2358)")
     keep_boxes = {token: _find_source_token_boxes(page, token) for token in keep_tokens}
     assert all(keep_boxes.values()), f"Synthetic source overflowed KEEP text: {keep_boxes}"
     source_text = page.get_text()
     for hyphen in ("\u00ad", "\u2010", "\u2011"):
         source_text = source_text.replace(hyphen, "-")
     source_text = " ".join(source_text.split())
-    assert "Комплектация по обосновывающему документу TEST.0001-АТТ.ОЛ1" in source_text
-    supplier_zone = fitz.Rect(xs[4], ys[1], xs[5], ys[-1])
+    assert "Комплектация по обосновывающему документу TEST-ЭГ.ОЛ1" in source_text
+    supplier_zone = fitz.Rect(xs[4], ys[1], xs[5], ys[-2])
+    ordinary_supplier_zone = fitz.Rect(xs[4], ys[1], xs[5], ys[-2])
     supplier_glyphs = [tuple(word[:4]) for word in page.get_text("words", sort=True)
-                       if fitz.Rect(*word[:4]).intersects(supplier_zone)]
+                       if fitz.Rect(*word[:4]).intersects(ordinary_supplier_zone)]
     assert supplier_glyphs, "Synthetic source has no supplier glyph boxes"
     redact_boxes = {
         "brand": [tuple(rect) for rect in page.search_for("Армтел")],
         "supplier_cell": [(xs[4], ys[1], xs[5], ys[2])],
         "supplier_glyphs": supplier_glyphs,
+        "innovation_row": [(xs[0], ys[-2], xs[-1], ys[-1])],
         "supplier_grid": [
             # Inspect the grid stroke from the non-redacted side. Adjacent
             # white cell background is not part of the line invariant.
@@ -554,19 +563,19 @@ def _assert_table_result(src, dst, report, xs, ys, keep_boxes, redact_boxes, ocr
             "closest_code_redaction": report["closest_code_redaction"],
             "code_zone": tuple(code_rect),
         }
-    supplier_text = region_text(fitz.Rect(xs[4], ys[1], xs[5], ys[-1]))
+    supplier_text = region_text(fitz.Rect(xs[4], ys[1], xs[5], ys[-2]))
     supplier_residual_words = ([{"text": word[4], "bbox": tuple(word[:4]),
                                  "distance_from_code_column": word[0] - xs[4]}
                                 for word in (words or [])
                                 if fitz.Rect(*word[:4]).intersects(
-                                    fitz.Rect(xs[4], ys[1], xs[5], ys[-1]))])
+                                    fitz.Rect(xs[4], ys[1], xs[5], ys[-2]))])
     supplier_evidence = {
         "supplier_text": supplier_text,
         "supplier_residual_words": supplier_residual_words,
         "supplier_column_boundary": xs[4],
         "supplier_redaction_rects": [
             rect for rect in report["redaction_rects"]
-            if fitz.Rect(rect).intersects(fitz.Rect(xs[4], ys[1], xs[5], ys[-1]))
+                if fitz.Rect(rect).intersects(fitz.Rect(xs[4], ys[1], xs[5], ys[-2]))
         ],
         "source_supplier_words": report["ocr_table_diagnostics"][0].get(
             "supplier_source_words", []) if ocr else [],
@@ -728,8 +737,8 @@ def _assert_table_result(src, dst, report, xs, ys, keep_boxes, redact_boxes, ocr
     normalized_text = normalized(all_text)
     normalized_source_text = normalized(source_text)
     exact_native_keep = ("IP66", "УХЛ1", "Ex d IIC T6", "DN100", "PN1,6 МПа",
-                         "09Г2С", "ГОСТ 12345", "100х50",
-                         "Комплектация по обосновывающему документу", "TEST.0001-АТТ.ОЛ1")
+                         "09Г2С", "ГОСТ 31947-2012", "100х50",
+                         "Комплектация по обосновывающему документу", "TEST-ЭГ.ОЛ1")
     if not ocr:
         for keep in exact_native_keep:
             assert keep in normalized_source_text, f"Fixture source lacks {keep!r}"
@@ -823,12 +832,24 @@ def _assert_table_result(src, dst, report, xs, ys, keep_boxes, redact_boxes, ocr
     # PDF extractors may represent the visual hyphen as U+00AD. Compare the
     # model semantically after removing only separators and whitespace, first
     # proving that it existed in the source and then that it survived.
-    source_model_key = re.sub(r"[\s\-\u00ad]", "", normalized_source_text)
-    result_model_key = re.sub(r"[\s\-\u00ad]", "", normalized_text)
-    assert "TESTM1" in source_model_key
     if not ocr:
-        assert "TESTM1" in result_model_key
-        assert "ТУ 1234-567-890 TEST-M2" in normalized_text
+        graph2 = normalized(region_text(fitz.Rect(xs[1], ys[1], xs[2], ys[-2])))
+        graph3_first = normalized(region_text(fitz.Rect(xs[2], ys[1], xs[3], ys[2])))
+        graph3_gost = normalized(region_text(fitz.Rect(xs[2], ys[2], xs[3], ys[3])))
+        graph3_ol = normalized(region_text(fitz.Rect(xs[2], ys[3], xs[3], ys[4])))
+        assert "ТУ" not in graph2
+        assert graph3_first == ""
+        assert graph3_gost == "ГОСТ 31947-2012"
+        assert graph3_ol == "Комплектация по обосновывающему документу TEST-ЭГ.ОЛ1"
+    innovation_rect = fitz.Rect(*redact_boxes["innovation_row"][0])
+    assert normalized(region_text(innovation_rect)) == normalized(source_region_text(innovation_rect))
+    assert all((innovation_rect & fitz.Rect(redaction)).get_area() == 0
+               for redaction in report["redaction_rects"])
+    innovation_before = source_page.get_pixmap(matrix=fitz.Matrix(2, 2),
+                                                clip=innovation_rect, alpha=False)
+    innovation_after = page.get_pixmap(matrix=fitz.Matrix(2, 2),
+                                       clip=innovation_rect, alpha=False)
+    assert bytes(innovation_before.samples) == bytes(innovation_after.samples)
     assert "ТЕСТОВЫЙ ЗАВОД" not in all_text and "1234567890" not in all_text
     if ocr:
         # Non-KEEP sensitive glyphs must physically change, proving the test
@@ -870,7 +891,7 @@ def test_ocr_table_columns_are_respected(tmp_path):
     assert diagnostics["grid_guards"] and report["grid_keep_rects"], diagnostics
     assert report["technical_keep_rects"] and report["technical_keep_diagnostics"], report
     assert report["allowed_delete_zones"] and report["absolute_keep_zones"], report
-    supplier_zone = fitz.Rect(xs[4], ys[1], xs[5], ys[-1])
+    supplier_zone = fitz.Rect(xs[4], ys[1], xs[5], ys[-2])
     assert not [item for item in report["technical_keep_diagnostics"]
                 if (fitz.Rect(item["rect"]) & supplier_zone).get_area() > 0], report
     assert all("label" in item and "expanded_bbox" in item and
