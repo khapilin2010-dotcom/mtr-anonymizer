@@ -739,10 +739,10 @@ def _ocr_technical_keep_areas(text_blocks, words, fitz, supplier_zone=None,
         for box in boxes[1:]:
             rect |= fitz.Rect(box)
         glyph_rect = fitz.Rect(rect)
-        # PDF_REDACT_IMAGE_PIXELS rounds a neighbouring rectangle outwards to
-        # source-image pixels. Two page points protect both the visible glyph
-        # antialias and that raster rounding without enlarging the glyph itself.
-        raster_guard = 2.0
+        # Windows control runs proved that 2.0 pt still lets outward image-pixel
+        # rounding alter IP66 while 2.5 pt is the smallest remaining tested
+        # halo that stays inside the real gap to the neighbouring brand glyph.
+        raster_guard = 2.5
         rect = fitz.Rect(rect.x0 - raster_guard, rect.y0 - raster_guard,
                          rect.x1 + raster_guard, rect.y1 + raster_guard)
         if supplier_zone:

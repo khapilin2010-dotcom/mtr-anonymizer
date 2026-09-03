@@ -6,7 +6,7 @@ from pathlib import Path
 import fitz
 import pytest
 
-from MTR_Obezlichivatel import process_pdf
+from MTR_Obezlichivatel import _outside_protected_rectangles, process_pdf
 from mtr_core import Anonymizer
 
 
@@ -333,6 +333,42 @@ def _technical_pixel_diagnostics(src, result_page, glyph_box, redaction_report, 
         reopened.close()
         controls["nearest_redaction_only"] = _pixel_diff(
             bytes(before.samples), bytes(single_pix.samples), before.width, before.n)
+
+        technical_candidates = [
+            item for item in redaction_report["technical_keep_diagnostics"]
+            if (fitz.Rect(item["glyph_bbox"]) & glyph_box).get_area() > 0
+        ]
+        if technical_candidates:
+            technical_glyph = fitz.Rect(technical_candidates[0]["glyph_bbox"])
+            expanded = fitz.Rect(nearby[0]["expanded_bbox"])
+            halo_controls = {}
+            for halo in (1.0, 1.5, 2.0, 2.5):
+                keep = fitz.Rect(technical_glyph.x0 - halo,
+                                 technical_glyph.y0 - halo,
+                                 technical_glyph.x1 + halo,
+                                 technical_glyph.y1 + halo)
+                safe = _outside_protected_rectangles([expanded], [keep], fitz)
+                halo_path = tmp_dir / f"technical_keep_halo_{halo:.1f}.pdf"
+                controlled = fitz.open(src)
+                page = controlled[0]
+                for safe_rect in safe:
+                    page.add_redact_annot(safe_rect, fill=(1, 1, 1),
+                                          cross_out=False)
+                if safe:
+                    page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_PIXELS,
+                                          graphics=fitz.PDF_REDACT_LINE_ART_NONE,
+                                          text=fitz.PDF_REDACT_TEXT_REMOVE)
+                controlled.save(halo_path, garbage=4, deflate=True, clean=True)
+                controlled.close()
+                reopened = fitz.open(halo_path)
+                halo_pix = reopened[0].get_pixmap(
+                    matrix=matrix, clip=glyph_box,
+                    colorspace=fitz.csGRAY, alpha=False)
+                reopened.close()
+                halo_controls[f"{halo:.1f}_pt"] = _pixel_diff(
+                    bytes(before.samples), bytes(halo_pix.samples),
+                    before.width, before.n)
+            controls["technical_keep_halos"] = halo_controls
 
     coordinate_bbox = None
     if changed:

@@ -26,3 +26,4 @@ MTR Anonymizer v17 RC1 — 02.09.2026
 - RC1 run #15: OCR technical/required phrase/OL glyph bboxes стали отдельным KEEP-слоем между CODE и GRID; любой generic/supplier redaction физически clipping-уется против него с полным rule/span diagnostics.
 - RC1 run #16: TECH KEEP neighbours и required phrase+OL ограничены OCR-колонкой/строкой; исключён захват legal form/name поставщика широким phrase bbox, strong technical token в supplier защищает только себя.
 - RC1 run #17: OCR TECH glyph rectangles защищены 2.0 pt raster guard от округления соседнего image redaction; добавлены IP/KEEP save-only и nearest-rule controls с core/antialias pixel diagnostics.
+- RC1 run #18: после доказанной недостаточности 2.0 pt TECH raster guard установлен в 2.5 pt; diagnostics выполняет halo sweep 1.0/1.5/2.0/2.5 и отдельно подтверждает полное физическое удаление соседнего бренда.
