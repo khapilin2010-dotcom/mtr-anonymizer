@@ -1,0 +1,33 @@
+MTR Anonymizer v17 RC1 — 02.09.2026
+
+- PDF-редакция стала table-aware / column-aware.
+- Колонка «Код продукции» объявлена абсолютным KEEP.
+- Поставщик удаляется целиком внутри ячейки без повреждения линий таблицы.
+- Защищены многострочные ссылки «Комплектация по обосновывающему документу» и ОЛ.
+- ТУ в PDF удаляется только при подтверждённом контексте производителя.
+- Добавлены подтверждённые бренды из пользовательского тестирования.
+- Excel-журнал теперь содержит реальные удалённые фрагменты для каждой изменённой строки.
+- Исправлены варианты реквизитов письма `ВО№ ... от ...`.
+- Добавлены синтетические native/OCR PDF regression fixtures без производственных данных.
+- RC1 follow-up: `TEST-M1` добавлен в общий защищённый класс структурных технических моделей; OCR-колонки распознаются даже при искажении текста заголовка.
+- RC1 run #2: KEEP-проверка native PDF нормализует U+00AD, а OCR-код защищён строгим сравнением хэша пикселей crop исходной и обработанной колонки.
+- RC1 run #3: устранено переполнение строки synthetic OL; для каждого OCR KEEP-токена сохранён исходный bbox и добавлено сравнение пикселей до/после redaction.
+- RC1 run #4: размеры synthetic PDF и ячеек увеличены для одинакового результата с Arial на Windows; добавлена обязательная проверка результата каждого insert_textbox до запуска anonymizer.
+- RC1 run #5: поиск исходных bbox технических обозначений учитывает platform-specific soft/Unicode hyphen и fallback по координатам слов без изменения anonymizer или состава KEEP-проверок.
+- RC1 run #6: scanned СО определяется по растровой геометрии сетки, а не точности OCR заголовков; добавлена диагностика слов, границ, зон колонок и причины решения detector.
+- RC1 run #7: добавлены save/redaction pixel-controls и подробный diff колонки/четырёх кодов; supplier image-redaction отодвинута от общей границы с абсолютным KEEP для защиты от округления пикселей.
+- RC1 run #8: OCR KEEP расширен на двухпунктовый pixel guard с обеих сторон колонки кода; добавлены расстояния до redaction, ближайший rectangle и раздельные border/glyph pixel-diffs.
+- RC1 run #9: supplier cleanup использует согласованную pixel-safe границу 1.0 pt (0.8 менял border, 2.0 оставлял первый glyph); диагностика содержит bbox остатка/исходных слов и фактические rectangles.
+- RC1 run #10: ложный OCR-текст на сетке классифицируется по пикселям; физическое удаление проверяется для каждого source supplier glyph, отдельно контролируются sensitive tokens, grid core и неизменность code-column.
+- RC1 run #11: residual OCR анализируется по происхождению каждого тёмного пикселя; координаты/bbox отделяют неизменный anti-alias сетки от реального supplier glyph или redaction-артефакта.
+- RC1 run #12: top/bottom supplier pixel-redaction отодвинута от grid на 2.0 pt; exact grid invariant дополнен метриками позиции, непрерывности, core stroke, толщины, RGB diff и расстояния до redaction.
+- RC1 run #13: для horizontal grid доказана неизменность core/позиции/непрерывности/толщины при различии только anti-alias intersections; structural invariant заменил неверный byte-compare, а вертикальный CODE/SUPPLIER divider остался byte-exact.
+- RC1 run #14: все supplier/generic OCR redactions физически вычитаются из raster-safe grid KEEP guards; журнал содержит rule и original/expanded/final rectangles с расстояниями до каждой близкой линии.
+- RC1 run #15: OCR technical/required phrase/OL glyph bboxes стали отдельным KEEP-слоем между CODE и GRID; любой generic/supplier redaction физически clipping-уется против него с полным rule/span diagnostics.
+- RC1 run #16: TECH KEEP neighbours и required phrase+OL ограничены OCR-колонкой/строкой; исключён захват legal form/name поставщика широким phrase bbox, strong technical token в supplier защищает только себя.
+- RC1 run #17: OCR TECH glyph rectangles защищены 2.0 pt raster guard от округления соседнего image redaction; добавлены IP/KEEP save-only и nearest-rule controls с core/antialias pixel diagnostics.
+- RC1 run #18: после доказанной недостаточности 2.0 pt TECH raster guard установлен в 2.5 pt; diagnostics выполняет halo sweep 1.0/1.5/2.0/2.5 и отдельно подтверждает полное физическое удаление соседнего бренда.
+- RC1 architecture: physical redaction разрешается только внутри геометрической cell-zone; затем последовательно вычитаются CODE, TECH/OL и GRID KEEP. Supplier очищается cell-wise, а technical failures собираются единым preflight-отчётом.
+- RC1 run #20: добавлен общий OCR parser полной Ex-маркировки в пределах строки/ячейки и полный TECH preflight без сокращения первого сбоя; геометрия CODE/SUPPLIER/GRID не изменялась.
+- RC1 run #21: полный KEEP распространён на PN/DN и инженерные value+unit выражения; TECH preflight отличает физическую потерю core glyph от harmless re-rendering, не ослабляя строгий CODE invariant.
+- RC1 run #22: Ex parser распознаёт смешанные OCR glyphs (`Ех d ИC Тб`) контекстно и строит KEEP по исходным bbox полного выражения; нормализованный текст в PDF не записывается.
