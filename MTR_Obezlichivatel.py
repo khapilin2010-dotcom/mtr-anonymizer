@@ -889,7 +889,8 @@ def _ocr_technical_keep_areas(text_blocks, words, fitz, supplier_zone=None,
         """Canonical OCR spelling used only to classify strong KEEP syntax."""
         return re.sub(r"[^0-9A-ZА-Я+.,/\-]", "", str(value).upper()).translate(
             str.maketrans({"Е": "E", "Х": "X", "С": "C", "В": "B",
-                           "А": "A", "Т": "T", "О": "O", "Р": "P"})
+                           "А": "A", "Т": "T", "О": "O", "Р": "P",
+                           "М": "M", "П": "P", "К": "K", "Г": "G"})
         )
 
     def same_cell_sequence(index, limit=7):
@@ -901,10 +902,10 @@ def _ocr_technical_keep_areas(text_blocks, words, fitz, supplier_zone=None,
     # one KEEP from the concrete glyph boxes in the same row and cell. Stop at
     # the first word outside the grammar, so a neighbouring brand is never
     # pulled into the protected rectangle.
-    ex_anchor = re.compile(r"^[012]?EX(?:D|DB|IA|IB|IC|E|M|N|P|Q)?$")
+    ex_anchor = re.compile(r"^[012]?[E3][XХ](?:D|DB|IA|IB|IC|E|M|N|P|Q)?$")
     ex_mode = re.compile(r"^(?:D|DB|IA|IB|IC|E|M|N|P|Q)$")
-    ex_group = re.compile(r"^II[ABC]$")
-    ex_temperature = re.compile(r"^T[1-6]$")
+    ex_group = re.compile(r"^(?:I|1|L){1,2}[ABC8]$")
+    ex_temperature = re.compile(r"^[T7][1-6]$")
     ex_level = re.compile(r"^G[ABC]$")
     for index, (_rect, word) in enumerate(normalized_words):
         first = ocr_key(word)
@@ -928,6 +929,39 @@ def _ocr_technical_keep_areas(text_blocks, words, fitz, supplier_zone=None,
             add("explosion_protection_expression",
                 " ".join(value for _box, value in accepted),
                 [box for box, _value in accepted])
+
+    # Ratings and measured values are also composite OCR expressions. Keep the
+    # exact glyph sequence (value + unit), rather than only the PN / number
+    # word, when Tesseract splits ``PN1,6 МПа`` or ``PN16 bar``.
+    rating_anchor = re.compile(r"^(?:PN|DN)(?:[-=]?\d+(?:[.,]\d+)?)?$")
+    number = re.compile(r"^[+\-]?\d+(?:[.,]\d+)?(?:\.\.\.[+\-]?\d+(?:[.,]\d+)?)?$")
+    engineering_unit = re.compile(
+        r"^(?:MPA|KPA|PA|BAR|BAP|KG[CF]/CM2|V|KV|B|KB|W|KW|BT|KBT|C|°C)$"
+    )
+    for index, (rect, word) in enumerate(normalized_words):
+        key = ocr_key(word)
+        sequence = same_cell_sequence(index, limit=4)
+        accepted = [(rect, word)]
+        if rating_anchor.fullmatch(key):
+            has_value = bool(re.search(r"\d", key))
+            for box, value in sequence[1:]:
+                candidate = ocr_key(value)
+                if not has_value and number.fullmatch(candidate):
+                    accepted.append((box, value)); has_value = True
+                elif has_value and engineering_unit.fullmatch(candidate):
+                    accepted.append((box, value))
+                    break
+                else:
+                    break
+            if has_value:
+                add("pressure_or_diameter_expression",
+                    " ".join(value for _box, value in accepted),
+                    [box for box, _value in accepted])
+        elif number.fullmatch(key) and len(sequence) > 1:
+            unit_key = ocr_key(sequence[1][1])
+            if engineering_unit.fullmatch(unit_key):
+                add("engineering_value_with_unit",
+                    f"{word} {sequence[1][1]}", [rect, sequence[1][0]])
 
     for index, (rect, word) in enumerate(normalized_words):
         if not technical_word.fullmatch(word):

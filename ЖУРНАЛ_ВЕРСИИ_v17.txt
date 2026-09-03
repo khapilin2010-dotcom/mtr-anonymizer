@@ -29,3 +29,4 @@ MTR Anonymizer v17 RC1 — 02.09.2026
 - RC1 run #18: после доказанной недостаточности 2.0 pt TECH raster guard установлен в 2.5 pt; diagnostics выполняет halo sweep 1.0/1.5/2.0/2.5 и отдельно подтверждает полное физическое удаление соседнего бренда.
 - RC1 architecture: physical redaction разрешается только внутри геометрической cell-zone; затем последовательно вычитаются CODE, TECH/OL и GRID KEEP. Supplier очищается cell-wise, а technical failures собираются единым preflight-отчётом.
 - RC1 run #20: добавлен общий OCR parser полной Ex-маркировки в пределах строки/ячейки и полный TECH preflight без сокращения первого сбоя; геометрия CODE/SUPPLIER/GRID не изменялась.
+- RC1 run #21: полный KEEP распространён на PN/DN и инженерные value+unit выражения; TECH preflight отличает физическую потерю core glyph от harmless re-rendering, не ослабляя строгий CODE invariant.

@@ -16,7 +16,17 @@ FONT = ("C:/Windows/Fonts/arial.ttf" if os.name == "nt"
         else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
 
 
-def _assert_ex_expression_parser():
+def _ocr_words(tokens):
+    words, x = [], 100.0
+    for token in (*tokens, "Армтел"):
+        width = max(12.0, len(token) * 6.0)
+        words.append((x, 100.0, x + width, 112.0, token,
+                      0, 0, len(words)))
+        x += width + 4.0
+    return words
+
+
+def _assert_technical_expression_parser():
     cases = (("Ex", "d", "IIC", "T6"),
              ("Ex", "db", "IIC", "T6", "Gb"),
              ("Ex", "ia", "IIC", "T4", "Ga"),
@@ -24,12 +34,7 @@ def _assert_ex_expression_parser():
              # Typical Cyrillic OCR substitutions for visually Latin glyphs.
              ("Ех", "d", "IIС", "T6"))
     for tokens in cases:
-        words, x = [], 100.0
-        for token in (*tokens, "Армтел"):
-            width = max(12.0, len(token) * 6.0)
-            words.append((x, 100.0, x + width, 112.0, token,
-                          0, 0, len(words)))
-            x += width + 4.0
+        words = _ocr_words(tokens)
         keeps = _ocr_technical_keep_areas([], words, fitz,
                                           supplier_zone=(500, 0, 700, 300),
                                           column_boundaries=(0, 500, 700))
@@ -39,6 +44,19 @@ def _assert_ex_expression_parser():
         keep = expressions[0]
         assert all(token in keep["text"] for token in tokens)
         assert (keep["glyph_rect"] & fitz.Rect(*words[-1][:4])).get_area() == 0
+    for tokens in (("PN1,6", "МПа"), ("PN16", "bar"),
+                   ("PN", "25", "МПа"), ("DN", "100"),
+                   ("220", "В"), ("5", "кВт")):
+        words = _ocr_words(tokens)
+        keeps = _ocr_technical_keep_areas([], words, fitz,
+                                          supplier_zone=(500, 0, 700, 300),
+                                          column_boundaries=(0, 500, 700))
+        expressions = [item for item in keeps if item["label"] in {
+            "pressure_or_diameter_expression", "engineering_value_with_unit"}]
+        assert expressions, {"tokens": tokens, "keeps": keeps}
+        assert all(token in expressions[0]["text"] for token in tokens)
+        assert (expressions[0]["glyph_rect"] &
+                fitz.Rect(*words[-1][:4])).get_area() == 0
 
 
 def _find_source_token_boxes(page, token):
@@ -312,7 +330,7 @@ def _technical_pixel_diagnostics(src, result_page, glyph_box, redaction_report, 
     after = result_page.get_pixmap(matrix=matrix, clip=glyph_box,
                                    colorspace=fitz.csGRAY, alpha=False)
     changed = []
-    core_changed = edge_changed = 0
+    core_changed = edge_changed = lost_core_pixels = 0
     for index, (old, new) in enumerate(zip(before.samples, after.samples)):
         if old == new:
             continue
@@ -323,6 +341,8 @@ def _technical_pixel_diagnostics(src, result_page, glyph_box, redaction_report, 
             core_changed += 1
         elif old < 250:
             edge_changed += 1
+        if old < 160 and new >= 200:
+            lost_core_pixels += 1
 
     def distance(first, second):
         dx = max(second.x0 - first.x1, first.x0 - second.x1, 0.0)
@@ -419,6 +439,7 @@ def _technical_pixel_diagnostics(src, result_page, glyph_box, redaction_report, 
         "after_dark_pixels": sum(value < 200 for value in after.samples),
         "core_glyph_pixels_changed": core_changed,
         "antialias_edge_pixels_changed": edge_changed,
+        "lost_core_glyph_pixels": lost_core_pixels,
         "nearby_redactions": nearby,
         "controls": controls,
     }
@@ -716,7 +737,7 @@ def _assert_table_result(src, dst, report, xs, ys, keep_boxes, redact_boxes, ocr
         # before rasterization must remain pixel-identical and untouched by
         # every physical redaction rectangle. Collect every token failure in
         # one preflight report instead of stopping at the first IP / Ex / OL.
-        technical_failures = []
+        technical_failures, technical_warnings = [], []
 
         def expected_keep_rule(token):
             if re.match(r"(?i)^[012]?[eе][xх]", token):
@@ -727,6 +748,11 @@ def _assert_table_result(src, dst, report, xs, ys, keep_boxes, redact_boxes, ocr
 
         for token, boxes in keep_boxes.items():
             for box in map(fitz.Rect, boxes):
+                # Product codes have a separate stronger invariant above: the
+                # complete column and every code glyph must be byte-identical.
+                # Do not report harmless renderer deltas a second time as TECH.
+                if (box & code_rect).get_area() > 0:
+                    continue
                 intersections = [
                     {"redaction_rect": redaction,
                      "intersection_area": (box & fitz.Rect(redaction)).get_area(),
@@ -758,7 +784,9 @@ def _assert_table_result(src, dst, report, xs, ys, keep_boxes, redact_boxes, ocr
                             box, fitz.Rect(item["final_safe_bbox"])),
                         default=None,
                     )
-                    technical_failures.append({
+                    pixel_diagnostics = (_technical_pixel_diagnostics(
+                        src, page, box, report, Path(dst).parent) if changed else None)
+                    evidence = {
                         "token": token,
                         "glyph_bbox": tuple(box),
                         "expected_production_keep_rule": expected_keep_rule(token),
@@ -766,9 +794,22 @@ def _assert_table_result(src, dst, report, xs, ys, keep_boxes, redact_boxes, ocr
                         "redaction_intersections": intersections,
                         "nearest_redaction": nearest,
                         "technical_keep_rects": technical_keeps,
-                        "pixel_diagnostics": (_technical_pixel_diagnostics(
-                            src, page, box, report, Path(dst).parent) if changed else None),
-                    })
+                        "pixel_diagnostics": pixel_diagnostics,
+                    }
+                    # A geometric intersection is always a defect. Without an
+                    # intersection, only physical loss of dark glyph core is a
+                    # failure; max RGB delta=1 re-encoding with an intact glyph
+                    # remains visible as a warning, never silently discarded.
+                    if intersections or (pixel_diagnostics and
+                                         pixel_diagnostics["lost_core_glyph_pixels"]):
+                        technical_failures.append(evidence)
+                    else:
+                        evidence["classification"] = "rendering-only; glyph core retained"
+                        technical_warnings.append(evidence)
+        if technical_warnings:
+            print("TECHNICAL KEEP PREFLIGHT WARNINGS:\n" + pprint.pformat(
+                {"technical_keep_warnings": technical_warnings},
+                width=160, sort_dicts=False))
         if technical_failures:
             # Do not rely on pytest's assertion-value shortening: emit the
             # complete aggregate preflight so one Windows run exposes every
@@ -802,7 +843,7 @@ def _assert_table_result(src, dst, report, xs, ys, keep_boxes, redact_boxes, ocr
 def test_native_table_columns_are_respected(tmp_path):
     # Exercise the OCR expression parser even on hosts without Tesseract so a
     # split Ex KEEP cannot regress into another one-error-per-CI cycle.
-    _assert_ex_expression_parser()
+    _assert_technical_expression_parser()
     src, dst = tmp_path / "table.pdf", tmp_path / "table_anon.pdf"
     xs, ys, keep_boxes, redact_boxes = _make_table_pdf(src)
     report = process_pdf(src, dst, Anonymizer())
