@@ -32,7 +32,9 @@ def _assert_technical_expression_parser():
              ("Ex", "ia", "IIC", "T4", "Ga"),
              ("1Ex", "d", "IIB", "T4"),
              # Typical Cyrillic OCR substitutions for visually Latin glyphs.
-             ("Ех", "d", "IIС", "T6"))
+             ("Ех", "d", "ИC", "Тб"),
+             ("1Ех", "d", "IIB", "Т4"),
+             ("Ex", "eb", "mb", "IIC", "T4", "Gb"))
     for tokens in cases:
         words = _ocr_words(tokens)
         keeps = _ocr_technical_keep_areas([], words, fitz,

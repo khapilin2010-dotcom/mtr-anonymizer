@@ -902,13 +902,36 @@ def _ocr_technical_keep_areas(text_blocks, words, fitz, supplier_zone=None,
     # one KEEP from the concrete glyph boxes in the same row and cell. Stop at
     # the first word outside the grammar, so a neighbouring brand is never
     # pulled into the protected rectangle.
-    ex_anchor = re.compile(r"^[012]?[E3][XХ](?:D|DB|IA|IB|IC|E|M|N|P|Q)?$")
-    ex_mode = re.compile(r"^(?:D|DB|IA|IB|IC|E|M|N|P|Q)$")
-    ex_group = re.compile(r"^(?:I|1|L){1,2}[ABC8]$")
+    def ex_key(value):
+        """Normalize confusables only while classifying an Ex expression.
+
+        The returned spelling is never written to the PDF: the KEEP rectangle
+        is always built from the original OCR glyph boxes.
+        """
+        key = re.sub(r"[^0-9A-ZА-Я]", "", str(value).upper()).translate(
+            str.maketrans({"Е": "E", "Х": "X", "И": "I", "І": "I",
+                           "С": "C", "Т": "T"}))
+        # Tesseract often reads the temperature digit 6 as Cyrillic б. This is
+        # safe only after a T/Т prefix inside an already anchored Ex grammar.
+        if len(key) == 2 and key[0] in {"T", "7"} and key[1] == "Б":
+            key = key[0] + "6"
+        return key
+
+    def ex_group_key(value):
+        key = ex_key(value)
+        match = re.fullmatch(r"([I1L]{1,2})([ABC8])", key)
+        if not match:
+            return key
+        # OCR frequently collapses the two leading I glyphs into one (ИC/IC).
+        return "II" + match.group(2).replace("8", "B")
+
+    ex_anchor = re.compile(r"^[012]?[E3]X(?:D|DB|IA|IB|IC|E|EB|MB|M|N|P|Q)?$")
+    ex_mode = re.compile(r"^(?:D|DB|IA|IB|IC|E|EB|MB|M|N|P|Q)$")
+    ex_group = re.compile(r"^II[ABC]$")
     ex_temperature = re.compile(r"^[T7][1-6]$")
     ex_level = re.compile(r"^G[ABC]$")
     for index, (_rect, word) in enumerate(normalized_words):
-        first = ocr_key(word)
+        first = ex_key(word)
         if not ex_anchor.fullmatch(first):
             continue
         expression = same_cell_sequence(index)
@@ -916,9 +939,14 @@ def _ocr_technical_keep_areas(text_blocks, words, fitz, supplier_zone=None,
         seen_group = bool(ex_group.fullmatch(first))
         seen_temperature = bool(ex_temperature.fullmatch(first))
         for box, value in expression[1:]:
-            key = ocr_key(value)
-            if (len(accepted) == 1 and ex_mode.fullmatch(key)) or ex_group.fullmatch(key):
-                accepted.append((box, value)); seen_group |= bool(ex_group.fullmatch(key))
+            key = ex_key(value)
+            group_key = ex_group_key(value)
+            if len(accepted) == 1 and ex_mode.fullmatch(key):
+                accepted.append((box, value))
+            elif ex_group.fullmatch(group_key) and not seen_temperature:
+                accepted.append((box, value)); seen_group = True
+            elif ex_mode.fullmatch(key) and not seen_group and not seen_temperature:
+                accepted.append((box, value))
             elif ex_temperature.fullmatch(key) and seen_group:
                 accepted.append((box, value)); seen_temperature = True
             elif ex_level.fullmatch(key) and seen_temperature:
