@@ -739,9 +739,12 @@ def _ocr_technical_keep_areas(text_blocks, words, fitz, supplier_zone=None,
         for box in boxes[1:]:
             rect |= fitz.Rect(box)
         glyph_rect = fitz.Rect(rect)
-        # OCR glyph boxes can be fractionally narrower than visible antialias.
-        rect = fitz.Rect(rect.x0 - 0.8, rect.y0 - 0.8,
-                         rect.x1 + 0.8, rect.y1 + 0.8)
+        # PDF_REDACT_IMAGE_PIXELS rounds a neighbouring rectangle outwards to
+        # source-image pixels. Two page points protect both the visible glyph
+        # antialias and that raster rounding without enlarging the glyph itself.
+        raster_guard = 2.0
+        rect = fitz.Rect(rect.x0 - raster_guard, rect.y0 - raster_guard,
+                         rect.x1 + raster_guard, rect.y1 + raster_guard)
         if supplier_zone:
             glyph_center = (glyph_rect.x0 + glyph_rect.x1) / 2
             in_supplier = supplier_zone.x0 <= glyph_center <= supplier_zone.x1
@@ -755,7 +758,8 @@ def _ocr_technical_keep_areas(text_blocks, words, fitz, supplier_zone=None,
         key = tuple(round(number, 2) for number in rect)
         if not any(item["key"] == key for item in protected):
             protected.append({"key": key, "label": label, "text": value,
-                              "rect": rect})
+                              "glyph_rect": glyph_rect, "rect": rect,
+                              "raster_guard": raster_guard})
 
     # Primary mapping uses the exact protected spans already employed by
     # Anonymizer.redaction_spans, but converts them back to OCR line geometry.
@@ -946,7 +950,8 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
             )
             report["technical_keep_diagnostics"].extend({
                 "page": page_no, "label": item["label"], "text": item["text"],
-                "rect": tuple(item["rect"]),
+                "glyph_bbox": tuple(item["glyph_rect"]),
+                "rect": tuple(item["rect"]), "raster_guard": item["raster_guard"],
             } for item in technical_keep)
         grid_guards = []
         if ocr_page and table_mode == "ocr-grid-columns":
@@ -1001,7 +1006,8 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
             safe_rects = _outside_protected_columns(supplier_rect, code_keep_rects, fitz)
             supplier_technical_intersections = [
                 {"label": item["label"], "reason": item["label"],
-                 "text": item["text"], "keep_bbox": tuple(item["rect"]),
+                 "text": item["text"], "glyph_bbox": tuple(item["glyph_rect"]),
+                 "keep_bbox": tuple(item["rect"]),
                  "intersection_area": (supplier_rect & item["rect"]).get_area()}
                 for item in technical_keep
                 if (supplier_rect & item["rect"]).get_area() > 0
@@ -1042,6 +1048,15 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
                     for item in grid_guards
                     if _rectangle_distance(safe_rect, item["rect"]) < 5.0
                 ]
+                near_technical = [
+                    {"label": item["label"], "text": item["text"],
+                     "glyph_bbox": tuple(item["glyph_rect"]),
+                     "keep_bbox": tuple(item["rect"]),
+                     "distance_to_glyph": _rectangle_distance(safe_rect, item["glyph_rect"]),
+                     "distance_to_keep": _rectangle_distance(safe_rect, item["rect"])}
+                    for item in technical_keep
+                    if _rectangle_distance(safe_rect, item["glyph_rect"]) < 5.0
+                ]
                 report["ocr_redaction_diagnostics"].append({
                     "page": page_no, "label": "supplier_cell",
                     "original_ocr_glyph_bbox": None,
@@ -1049,6 +1064,7 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
                     "final_safe_bbox": tuple(safe_rect),
                     "text_span": "supplier cell",
                     "technical_keep_intersections": supplier_technical_intersections,
+                    "near_technical_keep": near_technical,
                     "near_grid": near_grid,
                 })
                 report["redactions"] += 1
@@ -1227,6 +1243,7 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
                     safe_rects = _outside_protected_columns(rect, code_keep_rects, fitz)
                     intersected_technical = [
                         {"label": item["label"], "text": item["text"],
+                         "glyph_bbox": tuple(item["glyph_rect"]),
                          "keep_bbox": tuple(item["rect"]),
                          "intersection_area": (expanded_rect & item["rect"]).get_area()}
                         for item in technical_keep
@@ -1280,6 +1297,15 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
                             for item in grid_guards
                             if _rectangle_distance(rect, item["rect"]) < 5.0
                         ]
+                        near_technical = [
+                            {"label": item["label"], "text": item["text"],
+                             "glyph_bbox": tuple(item["glyph_rect"]),
+                             "keep_bbox": tuple(item["rect"]),
+                             "distance_to_glyph": _rectangle_distance(rect, item["glyph_rect"]),
+                             "distance_to_keep": _rectangle_distance(rect, item["rect"])}
+                            for item in technical_keep
+                            if _rectangle_distance(rect, item["glyph_rect"]) < 5.0
+                        ]
                         report["ocr_redaction_diagnostics"].append({
                             "page": page_no, "label": _label,
                             "source_rule": _label,
@@ -1288,6 +1314,7 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
                             "final_safe_bbox": tuple(rect),
                             "text_span": text[a:b],
                             "technical_keep_intersections": intersected_technical,
+                            "near_technical_keep": near_technical,
                             "near_grid": near_grid,
                         })
                         if any((rect & keep).get_area() > 0 for keep in code_keep_rects):

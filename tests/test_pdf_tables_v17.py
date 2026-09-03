@@ -269,6 +269,92 @@ def _save_and_redaction_controls(src, tmp_dir, code_rect, supplier_rect):
     }
 
 
+def _technical_pixel_diagnostics(src, result_page, glyph_box, redaction_report, tmp_dir):
+    """Explain a KEEP pixel change and isolate its nearest redaction."""
+    matrix = fitz.Matrix(4, 4)
+    source = fitz.open(src)
+    source_page = source[0]
+    before = source_page.get_pixmap(matrix=matrix, clip=glyph_box,
+                                    colorspace=fitz.csGRAY, alpha=False)
+    after = result_page.get_pixmap(matrix=matrix, clip=glyph_box,
+                                   colorspace=fitz.csGRAY, alpha=False)
+    changed = []
+    core_changed = edge_changed = 0
+    for index, (old, new) in enumerate(zip(before.samples, after.samples)):
+        if old == new:
+            continue
+        px, py = index % before.width, index // before.width
+        changed.append((round(glyph_box.x0 + (px + 0.5) / 4, 3),
+                        round(glyph_box.y0 + (py + 0.5) / 4, 3)))
+        if old < 80:
+            core_changed += 1
+        elif old < 250:
+            edge_changed += 1
+
+    def distance(first, second):
+        dx = max(second.x0 - first.x1, first.x0 - second.x1, 0.0)
+        dy = max(second.y0 - first.y1, first.y0 - second.y1, 0.0)
+        return (dx * dx + dy * dy) ** 0.5
+
+    nearby = []
+    for item in redaction_report["ocr_redaction_diagnostics"]:
+        final = fitz.Rect(item["final_safe_bbox"])
+        gap = distance(final, glyph_box)
+        if gap < 5.0:
+            nearby.append({**item, "distance_to_glyph_bbox": gap})
+    nearby.sort(key=lambda item: item["distance_to_glyph_bbox"])
+
+    controls = {}
+    saved_path = tmp_dir / "technical_keep_save_control.pdf"
+    saved = fitz.open(src)
+    saved.save(saved_path, garbage=4, deflate=True, clean=True)
+    saved.close()
+    reopened = fitz.open(saved_path)
+    saved_pix = reopened[0].get_pixmap(matrix=matrix, clip=glyph_box,
+                                       colorspace=fitz.csGRAY, alpha=False)
+    reopened.close()
+    controls["save_without_redaction"] = _pixel_diff(
+        bytes(before.samples), bytes(saved_pix.samples), before.width, before.n)
+
+    if nearby:
+        single_path = tmp_dir / "technical_keep_nearest_redaction_control.pdf"
+        controlled = fitz.open(src)
+        page = controlled[0]
+        page.add_redact_annot(fitz.Rect(nearby[0]["final_safe_bbox"]),
+                              fill=(1, 1, 1), cross_out=False)
+        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_PIXELS,
+                              graphics=fitz.PDF_REDACT_LINE_ART_NONE,
+                              text=fitz.PDF_REDACT_TEXT_REMOVE)
+        controlled.save(single_path, garbage=4, deflate=True, clean=True)
+        controlled.close()
+        reopened = fitz.open(single_path)
+        single_pix = reopened[0].get_pixmap(matrix=matrix, clip=glyph_box,
+                                            colorspace=fitz.csGRAY, alpha=False)
+        reopened.close()
+        controls["nearest_redaction_only"] = _pixel_diff(
+            bytes(before.samples), bytes(single_pix.samples), before.width, before.n)
+
+    coordinate_bbox = None
+    if changed:
+        xx, yy = zip(*changed)
+        coordinate_bbox = (min(xx), min(yy), max(xx), max(yy))
+    source.close()
+    return {
+        "glyph_bbox": tuple(glyph_box),
+        "changed_pixels": len(changed),
+        "changed_pixel_coordinates": changed[:64],
+        "changed_pixel_coordinates_bbox": coordinate_bbox,
+        "max_rgb_delta": max((abs(a - b) for a, b in zip(before.samples, after.samples)),
+                             default=0),
+        "before_dark_pixels": sum(value < 200 for value in before.samples),
+        "after_dark_pixels": sum(value < 200 for value in after.samples),
+        "core_glyph_pixels_changed": core_changed,
+        "antialias_edge_pixels_changed": edge_changed,
+        "nearby_redactions": nearby,
+        "controls": controls,
+    }
+
+
 def _assert_table_result(src, dst, report, xs, ys, keep_boxes, redact_boxes, ocr=False):
     assert report["table_pages"] == 1
     assert report["supplier_cells_redacted"] >= 2
@@ -558,7 +644,17 @@ def _assert_table_result(src, dst, report, xs, ys, keep_boxes, redact_boxes, ocr
                            for redaction in report["redaction_rects"]), token
                 before = source_page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=box, alpha=False)
                 after = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=box, alpha=False)
-                assert hashlib.sha256(before.samples).digest() == hashlib.sha256(after.samples).digest(), token
+                if hashlib.sha256(before.samples).digest() != hashlib.sha256(after.samples).digest():
+                    technical_keeps = [
+                        item for item in report["technical_keep_diagnostics"]
+                        if (box & fitz.Rect(item["rect"])).get_area() > 0
+                    ]
+                    pytest.fail({
+                        "token": token,
+                        "technical_keep_rects": technical_keeps,
+                        "pixel_diagnostics": _technical_pixel_diagnostics(
+                            src, page, box, report, Path(dst).parent),
+                    })
     # PDF extractors may represent the visual hyphen as U+00AD. Compare the
     # model semantically after removing only separators and whitespace, first
     # proving that it existed in the source and then that it survived.
