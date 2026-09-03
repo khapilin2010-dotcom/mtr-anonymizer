@@ -861,11 +861,11 @@ def _ocr_technical_keep_areas(text_blocks, words, fitz, supplier_zone=None,
             zip(column_boundaries, column_boundaries[1:]))
             if left <= center <= right), None)
 
-    def adjacent_words(index, limit=3):
+    def adjacent_word_items(index, limit=6):
         base_rect = normalized_words[index][0]
         base_column = column_index(base_rect)
         selected, previous = [], base_rect
-        for candidate_rect, _candidate in normalized_words[index + 1:]:
+        for candidate_rect, candidate in normalized_words[index + 1:]:
             if len(selected) >= limit:
                 break
             if base_column is not None and column_index(candidate_rect) != base_column:
@@ -878,9 +878,56 @@ def _ocr_technical_keep_areas(text_blocks, words, fitz, supplier_zone=None,
                 if selected:
                     break
                 continue
-            selected.append(candidate_rect)
+            selected.append((candidate_rect, candidate))
             previous = candidate_rect
         return selected
+
+    def adjacent_words(index, limit=3):
+        return [rect for rect, _word in adjacent_word_items(index, limit)]
+
+    def ocr_key(value):
+        """Canonical OCR spelling used only to classify strong KEEP syntax."""
+        return re.sub(r"[^0-9A-ZА-Я+.,/\-]", "", str(value).upper()).translate(
+            str.maketrans({"Е": "E", "Х": "X", "С": "C", "В": "B",
+                           "А": "A", "Т": "T", "О": "O", "Р": "P"})
+        )
+
+    def same_cell_sequence(index, limit=7):
+        return [(normalized_words[index][0], normalized_words[index][1]),
+                *adjacent_word_items(index, limit - 1)]
+
+    # Explosion-protection marks are expressions, not independent words. OCR
+    # commonly splits ``Ex d IIC T6`` and may substitute Cyrillic Е/х/С. Build
+    # one KEEP from the concrete glyph boxes in the same row and cell. Stop at
+    # the first word outside the grammar, so a neighbouring brand is never
+    # pulled into the protected rectangle.
+    ex_anchor = re.compile(r"^[012]?EX(?:D|DB|IA|IB|IC|E|M|N|P|Q)?$")
+    ex_mode = re.compile(r"^(?:D|DB|IA|IB|IC|E|M|N|P|Q)$")
+    ex_group = re.compile(r"^II[ABC]$")
+    ex_temperature = re.compile(r"^T[1-6]$")
+    ex_level = re.compile(r"^G[ABC]$")
+    for index, (_rect, word) in enumerate(normalized_words):
+        first = ocr_key(word)
+        if not ex_anchor.fullmatch(first):
+            continue
+        expression = same_cell_sequence(index)
+        accepted = [expression[0]]
+        seen_group = bool(ex_group.fullmatch(first))
+        seen_temperature = bool(ex_temperature.fullmatch(first))
+        for box, value in expression[1:]:
+            key = ocr_key(value)
+            if (len(accepted) == 1 and ex_mode.fullmatch(key)) or ex_group.fullmatch(key):
+                accepted.append((box, value)); seen_group |= bool(ex_group.fullmatch(key))
+            elif ex_temperature.fullmatch(key) and seen_group:
+                accepted.append((box, value)); seen_temperature = True
+            elif ex_level.fullmatch(key) and seen_temperature:
+                accepted.append((box, value))
+            else:
+                break
+        if seen_group and seen_temperature:
+            add("explosion_protection_expression",
+                " ".join(value for _box, value in accepted),
+                [box for box, _value in accepted])
 
     for index, (rect, word) in enumerate(normalized_words):
         if not technical_word.fullmatch(word):
@@ -888,7 +935,7 @@ def _ocr_technical_keep_areas(text_blocks, words, fitz, supplier_zone=None,
         boxes = [rect]
         # Normative prefixes and Ex / DN / PN expressions commonly span the
         # next words; protect their concrete neighbouring glyph boxes too.
-        if re.fullmatch(r"(?i)(?:ГОСТ|ТУ|СТО|ТТП|TTP|Ex\w*|DN|PN)", word):
+        if re.fullmatch(r"(?i)(?:ГОСТ|ТУ|СТО|ТТП|TTP|DN|PN)", word):
             boxes.extend(adjacent_words(index))
         add("protected_ocr_word", word, boxes)
 

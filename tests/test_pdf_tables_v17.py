@@ -1,17 +1,44 @@
 import os
 import hashlib
+import pprint
 import re
 from pathlib import Path
 
 import fitz
 import pytest
 
-from MTR_Obezlichivatel import _outside_protected_rectangles, process_pdf
+from MTR_Obezlichivatel import (_ocr_technical_keep_areas,
+                                _outside_protected_rectangles, process_pdf)
 from mtr_core import Anonymizer
 
 
 FONT = ("C:/Windows/Fonts/arial.ttf" if os.name == "nt"
         else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+
+
+def _assert_ex_expression_parser():
+    cases = (("Ex", "d", "IIC", "T6"),
+             ("Ex", "db", "IIC", "T6", "Gb"),
+             ("Ex", "ia", "IIC", "T4", "Ga"),
+             ("1Ex", "d", "IIB", "T4"),
+             # Typical Cyrillic OCR substitutions for visually Latin glyphs.
+             ("Ех", "d", "IIС", "T6"))
+    for tokens in cases:
+        words, x = [], 100.0
+        for token in (*tokens, "Армтел"):
+            width = max(12.0, len(token) * 6.0)
+            words.append((x, 100.0, x + width, 112.0, token,
+                          0, 0, len(words)))
+            x += width + 4.0
+        keeps = _ocr_technical_keep_areas([], words, fitz,
+                                          supplier_zone=(500, 0, 700, 300),
+                                          column_boundaries=(0, 500, 700))
+        expressions = [item for item in keeps
+                       if item["label"] == "explosion_protection_expression"]
+        assert len(expressions) == 1, {"tokens": tokens, "keeps": keeps}
+        keep = expressions[0]
+        assert all(token in keep["text"] for token in tokens)
+        assert (keep["glyph_rect"] & fitz.Rect(*words[-1][:4])).get_area() == 0
 
 
 def _find_source_token_boxes(page, token):
@@ -148,6 +175,12 @@ def _pixel_diff(before, after, width, channels):
         "max_rgb_delta": max(abs(before[index] - after[index])
                              for index in changed_channels),
     }
+
+
+def _rect_distance(left, right):
+    dx = max(right.x0 - left.x1, left.x0 - right.x1, 0.0)
+    dy = max(right.y0 - left.y1, left.y0 - right.y1, 0.0)
+    return (dx * dx + dy * dy) ** 0.5
 
 
 def _grid_line_diagnostics(source_page, result_page, rect, orientation):
@@ -684,6 +717,14 @@ def _assert_table_result(src, dst, report, xs, ys, keep_boxes, redact_boxes, ocr
         # every physical redaction rectangle. Collect every token failure in
         # one preflight report instead of stopping at the first IP / Ex / OL.
         technical_failures = []
+
+        def expected_keep_rule(token):
+            if re.match(r"(?i)^[012]?[eе][xх]", token):
+                return "explosion_protection_expression"
+            if token.startswith("Комплектация") or re.search(r"(?i)(?:ОЛ|OL)\d", token):
+                return "required_phrase_ol"
+            return "protected_regex/protected_ocr_word"
+
         for token, boxes in keep_boxes.items():
             for box in map(fitz.Rect, boxes):
                 intersections = [
@@ -702,14 +743,39 @@ def _assert_table_result(src, dst, report, xs, ys, keep_boxes, redact_boxes, ocr
                         item for item in report["technical_keep_diagnostics"]
                         if (box & fitz.Rect(item["rect"])).get_area() > 0
                     ]
+                    nearby_words = [
+                        {"text": word[4], "bbox": tuple(word[:4])}
+                        for word in source_words
+                        if (box & fitz.Rect(*word[:4])).get_area() > 0 or
+                        fitz.Rect(box.x0 - 5, box.y0 - 5,
+                                  box.x1 + 5, box.y1 + 5).intersects(
+                                      fitz.Rect(*word[:4]))
+                    ]
+                    redaction_diagnostics = report["ocr_redaction_diagnostics"]
+                    nearest = min(
+                        redaction_diagnostics,
+                        key=lambda item: _rect_distance(
+                            box, fitz.Rect(item["final_safe_bbox"])),
+                        default=None,
+                    )
                     technical_failures.append({
                         "token": token,
                         "glyph_bbox": tuple(box),
+                        "expected_production_keep_rule": expected_keep_rule(token),
+                        "source_ocr_words": nearby_words,
                         "redaction_intersections": intersections,
+                        "nearest_redaction": nearest,
                         "technical_keep_rects": technical_keeps,
                         "pixel_diagnostics": (_technical_pixel_diagnostics(
                             src, page, box, report, Path(dst).parent) if changed else None),
                     })
+        if technical_failures:
+            # Do not rely on pytest's assertion-value shortening: emit the
+            # complete aggregate preflight so one Windows run exposes every
+            # failed token and its production provenance.
+            print("FULL TECHNICAL KEEP PREFLIGHT:\n" + pprint.pformat(
+                {"technical_keep_failures": technical_failures},
+                width=160, sort_dicts=False))
         assert not technical_failures, {"technical_keep_failures": technical_failures}
     # PDF extractors may represent the visual hyphen as U+00AD. Compare the
     # model semantically after removing only separators and whitespace, first
@@ -734,6 +800,9 @@ def _assert_table_result(src, dst, report, xs, ys, keep_boxes, redact_boxes, ocr
 
 
 def test_native_table_columns_are_respected(tmp_path):
+    # Exercise the OCR expression parser even on hosts without Tesseract so a
+    # split Ex KEEP cannot regress into another one-error-per-CI cycle.
+    _assert_ex_expression_parser()
     src, dst = tmp_path / "table.pdf", tmp_path / "table_anon.pdf"
     xs, ys, keep_boxes, redact_boxes = _make_table_pdf(src)
     report = process_pdf(src, dst, Anonymizer())
