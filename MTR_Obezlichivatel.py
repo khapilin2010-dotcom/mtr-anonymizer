@@ -541,7 +541,32 @@ def _table_redaction_zones(page, fitz, az, textpage=None):
                             r"Комплектация\s+по\s+обосновывающему\s+документу\s+\S*(?:ОЛ|OL)\d+"
                         )
                         for match in keep_re.finditer(cell_text):
-                            for found in page.search_for(match.group(0)):
+                            found_rects = [fitz.Rect(found) for found in
+                                           page.search_for(match.group(0))
+                                           if fitz.Rect(found).intersects(cell)]
+                            # Windows PDF text extraction may expose the visual
+                            # hyphen as a soft / Unicode hyphen, making a full
+                            # search_for() miss an otherwise intact ГОСТ. Build
+                            # the same KEEP from original word glyph boxes.
+                            if not found_rects and match.group(0).upper().startswith("ГОСТ"):
+                                words = page.get_text("words", clip=cell, sort=True)
+                                for word_no, word in enumerate(words):
+                                    if str(word[4]).upper() != "ГОСТ":
+                                        continue
+                                    selected = [fitz.Rect(*word[:4])]
+                                    for neighbour in words[word_no + 1:word_no + 3]:
+                                        if abs(neighbour[1] - word[1]) > max(3, word[3] - word[1]):
+                                            break
+                                        selected.append(fitz.Rect(*neighbour[:4]))
+                                        if re.search(r"\d", str(neighbour[4])):
+                                            break
+                                    if any(re.search(r"\d", str(item[4]))
+                                           for item in words[word_no + 1:word_no + 3]):
+                                        joined = fitz.Rect(selected[0])
+                                        for item in selected[1:]: joined |= item
+                                        found_rects.append(joined)
+                                    break
+                            for found in found_rects:
                                 clipped = fitz.Rect(found) & cell
                                 if not clipped.is_empty:
                                     diagnostics["type_keep_rects"].append({
@@ -1281,12 +1306,19 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
                 type_rect, type_rect, allowed_delete_zones, fitz,
                 roles=("type_mark",),
             )
+            safe_rects = [piece for candidate in safe_rects
+                          for piece in _outside_protected_columns(
+                              candidate, code_keep_rects, fitz)]
             relevant_keeps = [fitz.Rect(item["rect"]) for item in type_keep_items
                               if (fitz.Rect(item["rect"]) & type_rect).get_area() > 0]
             safe_rects = _outside_protected_rectangles(safe_rects, relevant_keeps, fitz)
             safe_rects = _outside_protected_rectangles(
                 safe_rects, [item["rect"] for item in grid_guards], fitz)
             for safe_rect in safe_rects:
+                if any((safe_rect & code_rect).get_area() > 0
+                       for code_rect in code_keep_rects):
+                    raise AssertionError(
+                        f"type-cell redaction intersects code KEEP: {safe_rect}")
                 page.add_redact_annot(safe_rect, fill=(1, 1, 1), cross_out=False)
                 page_rects.append(safe_rect)
                 report["redaction_rects"].append(tuple(safe_rect))
@@ -1341,6 +1373,10 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
                 report["review"] = True
                 continue
             for safe_rect in safe_rects:
+                if any((safe_rect & code_rect).get_area() > 0
+                       for code_rect in code_keep_rects):
+                    raise AssertionError(
+                        f"supplier redaction intersects code KEEP: {safe_rect}")
                 page.add_redact_annot(safe_rect, fill=(1, 1, 1), cross_out=False)
                 page_rects.append(safe_rect)
                 report["redaction_rects"].append(tuple(safe_rect))
@@ -1607,6 +1643,10 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
                             for r in page_rects
                         ):
                             continue
+                        if any((rect & code_rect).get_area() > 0
+                               for code_rect in code_keep_rects):
+                            raise AssertionError(
+                                f"description redaction intersects code KEEP: {rect}")
                         page.add_redact_annot(rect, fill=(1, 1, 1), cross_out=False)
                         page_rects.append(rect)
                         report["redaction_rects"].append(tuple(rect))
