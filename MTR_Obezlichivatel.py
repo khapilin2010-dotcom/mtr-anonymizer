@@ -484,7 +484,9 @@ def _table_redaction_zones(page, fitz, az, textpage=None):
     code_cells, supplier_areas, code_values = [], [], []
     diagnostics = {"header_words": [], "vertical_boundaries": [],
                    "horizontal_boundaries": [], "code_column_zone": None,
-                   "supplier_column_zone": None, "reason": "not evaluated"}
+                   "supplier_column_zone": None, "cell_rects": [],
+                   "allowed_delete_zones": [], "absolute_keep_zones": [],
+                   "reason": "not evaluated"}
     try:
         tables = page.find_tables().tables
     except Exception:
@@ -497,13 +499,33 @@ def _table_redaction_zones(page, fitz, az, textpage=None):
             supplier_col = next((i for i, key in enumerate(keys) if "поставщик" in key), None)
             if code_col is None or supplier_col is None:
                 continue
+            description_cols = [i for i, key in enumerate(keys) if
+                                "наименование" in key or "техническ" in key or
+                                "тип марка" in key]
             for row_no in range(header_row + 1, table.row_count):
+                for col_no, raw_cell in enumerate(table.rows[row_no].cells):
+                    if not raw_cell:
+                        continue
+                    cell = fitz.Rect(raw_cell)
+                    diagnostics["cell_rects"].append({
+                        "row": row_no, "column": col_no, "rect": tuple(cell)
+                    })
+                    if col_no in description_cols:
+                        diagnostics["allowed_delete_zones"].append({
+                            "role": "description", "row": row_no, "column": col_no,
+                            "rect": tuple(fitz.Rect(cell.x0 + 0.5, cell.y0 + 0.5,
+                                                    cell.x1 - 0.5, cell.y1 - 0.5)),
+                        })
                 code_cell = table.rows[row_no].cells[code_col]
                 supplier_cell = table.rows[row_no].cells[supplier_col]
                 if code_cell:
                     code_rect = fitz.Rect(code_cell)
                     code_cells.append(code_rect)
                     code_values.append(page.get_textbox(code_rect).strip())
+                    diagnostics["absolute_keep_zones"].append({
+                        "role": "product_code", "row": row_no, "column": code_col,
+                        "rect": tuple(code_rect),
+                    })
                 if supplier_cell:
                     cell_rect = fitz.Rect(supplier_cell)
                     supplier_text = page.get_textbox(cell_rect).strip()
@@ -514,10 +536,15 @@ def _table_redaction_zones(page, fitz, az, textpage=None):
                     ))
                     if supplier_text and supplier_org:
                         # Keep a small inset to preserve vector grid lines.
-                        supplier_areas.append(fitz.Rect(
+                        delete_rect = fitz.Rect(
                             cell_rect.x0 + 0.8, cell_rect.y0 + 0.8,
                             cell_rect.x1 - 0.8, cell_rect.y1 - 0.8,
-                        ))
+                        )
+                        supplier_areas.append(delete_rect)
+                        diagnostics["allowed_delete_zones"].append({
+                            "role": "supplier", "row": row_no,
+                            "column": supplier_col, "rect": tuple(delete_rect),
+                        })
             diagnostics["reason"] = "native vector table"
             return code_cells, supplier_areas, code_values, "native-table", diagnostics
 
@@ -554,8 +581,24 @@ def _table_redaction_zones(page, fitz, az, textpage=None):
                                            supplier_x1, grid_y[-1]))
             ]
             for top, bottom in zip(grid_y[1:-1], grid_y[2:]):
+                row_no = len(code_cells) + 1
+                for col_no, (left, right) in enumerate(zip(grid_x, grid_x[1:])):
+                    cell = fitz.Rect(left, top, right, bottom)
+                    diagnostics["cell_rects"].append({
+                        "row": row_no, "column": col_no, "rect": tuple(cell)
+                    })
+                    if col_no in (1, 2):
+                        diagnostics["allowed_delete_zones"].append({
+                            "role": "description", "row": row_no, "column": col_no,
+                            "rect": tuple(fitz.Rect(left + 1.0, top + 2.0,
+                                                    right - 1.0, bottom - 2.0)),
+                        })
                 code_rect = fitz.Rect(code_x0, top, code_x1, bottom)
                 code_cells.append(code_rect)
+                diagnostics["absolute_keep_zones"].append({
+                    "role": "product_code", "row": row_no, "column": 3,
+                    "rect": tuple(code_rect),
+                })
                 code_values.append(" ".join(
                     word for rect, word in normalized if rect.intersects(code_rect)
                 ))
@@ -565,10 +608,15 @@ def _table_redaction_zones(page, fitz, az, textpage=None):
                 # second two-point inset here would leave the first supplier
                 # glyph partially outside physical image redaction. Horizontal
                 # borders have room for a two-point guard before text begins.
-                supplier_areas.append(fitz.Rect(
+                supplier_rect = fitz.Rect(
                     supplier_x0 + 1.0, top + 2.0,
                     supplier_x1 - 0.8, bottom - 2.0,
-                ))
+                )
+                supplier_areas.append(supplier_rect)
+                diagnostics["allowed_delete_zones"].append({
+                    "role": "supplier", "row": row_no, "column": 4,
+                    "rect": tuple(supplier_rect),
+                })
             diagnostics["reason"] = "nine-column raster grid"
             return code_cells, supplier_areas, code_values, "ocr-grid-columns", diagnostics
 
@@ -702,6 +750,26 @@ def _outside_protected_rectangles(rects, protected, fitz):
                                              piece.x1, overlap.y1))
         pieces = next_pieces
     return [piece for piece in pieces if piece.width > 0.4 and piece.height > 0.4]
+
+
+def _inside_allowed_delete_zones(candidate, source_bbox, zones, fitz,
+                                 roles=("description",)):
+    """Intersect a candidate with its source cell's explicit delete zone."""
+    if not zones:
+        return [fitz.Rect(candidate)]
+    source = fitz.Rect(source_bbox)
+    center = fitz.Point((source.x0 + source.x1) / 2,
+                        (source.y0 + source.y1) / 2)
+    matching = []
+    for zone in zones:
+        if zone.get("role") not in roles:
+            continue
+        rect = fitz.Rect(zone["rect"])
+        if center in rect or (source & rect).get_area() > 0:
+            clipped = fitz.Rect(candidate) & rect
+            if not clipped.is_empty and clipped.width > 0.4 and clipped.height > 0.4:
+                matching.append(clipped)
+    return matching
 
 
 def _rectangle_distance(rect, keep):
@@ -867,6 +935,8 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
               "grid_keep_rects": [], "ocr_redaction_diagnostics": [],
               "technical_keep_rects": [], "technical_keep_diagnostics": [],
               "prevented_technical_keep_overlaps": 0,
+              "allowed_delete_zones": [], "absolute_keep_zones": [],
+              "redactions_outside_allowed_zones": 0,
               "code_column_redaction_distances": [],
               "closest_code_redaction": None}
 
@@ -938,6 +1008,14 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
             page, fitz, az, active_textpage
         )
         technical_keep = []
+        allowed_delete_zones = table_diagnostics.get("allowed_delete_zones", [])
+        report["allowed_delete_zones"].extend(
+            {**zone, "page": page_no} for zone in allowed_delete_zones
+        )
+        report["absolute_keep_zones"].extend(
+            {**zone, "page": page_no}
+            for zone in table_diagnostics.get("absolute_keep_zones", [])
+        )
         if ocr_page and active_textpage is not None:
             ocr_words = page.get_text("words", textpage=active_textpage, sort=True)
             technical_keep = _ocr_technical_keep_areas(
@@ -952,6 +1030,11 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
                 "page": page_no, "label": item["label"], "text": item["text"],
                 "glyph_bbox": tuple(item["glyph_rect"]),
                 "rect": tuple(item["rect"]), "raster_guard": item["raster_guard"],
+            } for item in technical_keep)
+            report["absolute_keep_zones"].extend({
+                "page": page_no, "role": "technical",
+                "label": item["label"], "text": item["text"],
+                "rect": tuple(item["rect"]),
             } for item in technical_keep)
         grid_guards = []
         if ocr_page and table_mode == "ocr-grid-columns":
@@ -1003,7 +1086,12 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
 
         page_rects = []
         for supplier_rect in supplier_areas:
-            safe_rects = _outside_protected_columns(supplier_rect, code_keep_rects, fitz)
+            safe_rects = _inside_allowed_delete_zones(
+                supplier_rect, supplier_rect, allowed_delete_zones, fitz,
+                roles=("supplier",),
+            )
+            safe_rects = [piece for rect in safe_rects
+                          for piece in _outside_protected_columns(rect, code_keep_rects, fitz)]
             supplier_technical_intersections = [
                 {"label": item["label"], "reason": item["label"],
                  "text": item["text"], "glyph_bbox": tuple(item["glyph_rect"]),
@@ -1240,7 +1328,15 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
                 report["matches"] += 1
                 for rect, original_glyph_bbox in rect_details:
                     expanded_rect = fitz.Rect(rect)
-                    safe_rects = _outside_protected_columns(rect, code_keep_rects, fitz)
+                    safe_rects = _inside_allowed_delete_zones(
+                        rect, original_glyph_bbox, allowed_delete_zones, fitz,
+                        roles=("description",),
+                    )
+                    if table_mode != "none" and not safe_rects:
+                        report["review"] = True
+                    safe_rects = [piece for candidate in safe_rects
+                                  for piece in _outside_protected_columns(
+                                      candidate, code_keep_rects, fitz)]
                     intersected_technical = [
                         {"label": item["label"], "text": item["text"],
                          "glyph_bbox": tuple(item["glyph_rect"]),
@@ -1322,6 +1418,16 @@ def process_pdf(src: Path, dst: Path, az: Anonymizer, progress=None):
                         report["redactions"] += 1
 
         if page_rects:
+            if table_mode != "none":
+                for final_rect in page_rects:
+                    contained = any(
+                        abs((final_rect & fitz.Rect(zone["rect"])).get_area() -
+                            final_rect.get_area()) < 0.01
+                        for zone in allowed_delete_zones
+                    )
+                    if not contained:
+                        report["redactions_outside_allowed_zones"] += 1
+                        report["review"] = True
             for redaction_rect in page_rects:
                 if not code_keep_rects:
                     continue

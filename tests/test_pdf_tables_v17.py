@@ -396,6 +396,14 @@ def _assert_table_result(src, dst, report, xs, ys, keep_boxes, redact_boxes, ocr
     assert report["supplier_cells_redacted"] >= 2
     assert report["code_column_unchanged"] is True
     assert report["code_column_intersections"] == 0
+    assert report["redactions_outside_allowed_zones"] == 0
+    for redaction in map(fitz.Rect, report["redaction_rects"]):
+        assert any(abs((redaction & fitz.Rect(zone["rect"])).get_area() -
+                       redaction.get_area()) < 0.01
+                   for zone in report["allowed_delete_zones"]), {
+            "redaction_outside_allowed_cell": tuple(redaction),
+            "allowed_delete_zones": report["allowed_delete_zones"],
+        }
     for redaction in map(fitz.Rect, report["redaction_rects"]):
         for keep in map(fitz.Rect, report["code_keep_rects"]):
             assert (redaction & keep).get_area() == 0
@@ -673,24 +681,36 @@ def _assert_table_result(src, dst, report, xs, ys, keep_boxes, redact_boxes, ocr
     else:
         # OCR spelling is non-authoritative. The visual glyph areas recorded
         # before rasterization must remain pixel-identical and untouched by
-        # every physical redaction rectangle.
+        # every physical redaction rectangle. Collect every token failure in
+        # one preflight report instead of stopping at the first IP / Ex / OL.
+        technical_failures = []
         for token, boxes in keep_boxes.items():
             for box in map(fitz.Rect, boxes):
-                assert all((box & fitz.Rect(redaction)).get_area() == 0
-                           for redaction in report["redaction_rects"]), token
+                intersections = [
+                    {"redaction_rect": redaction,
+                     "intersection_area": (box & fitz.Rect(redaction)).get_area(),
+                     "diagnostics": [item for item in report["ocr_redaction_diagnostics"]
+                                     if tuple(item["final_safe_bbox"]) == tuple(redaction)]}
+                    for redaction in report["redaction_rects"]
+                    if (box & fitz.Rect(redaction)).get_area() > 0
+                ]
                 before = source_page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=box, alpha=False)
                 after = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=box, alpha=False)
-                if hashlib.sha256(before.samples).digest() != hashlib.sha256(after.samples).digest():
+                changed = hashlib.sha256(before.samples).digest() != hashlib.sha256(after.samples).digest()
+                if intersections or changed:
                     technical_keeps = [
                         item for item in report["technical_keep_diagnostics"]
                         if (box & fitz.Rect(item["rect"])).get_area() > 0
                     ]
-                    pytest.fail({
+                    technical_failures.append({
                         "token": token,
+                        "glyph_bbox": tuple(box),
+                        "redaction_intersections": intersections,
                         "technical_keep_rects": technical_keeps,
-                        "pixel_diagnostics": _technical_pixel_diagnostics(
-                            src, page, box, report, Path(dst).parent),
+                        "pixel_diagnostics": (_technical_pixel_diagnostics(
+                            src, page, box, report, Path(dst).parent) if changed else None),
                     })
+        assert not technical_failures, {"technical_keep_failures": technical_failures}
     # PDF extractors may represent the visual hyphen as U+00AD. Compare the
     # model semantically after removing only separators and whitespace, first
     # proving that it existed in the source and then that it survived.
@@ -737,6 +757,7 @@ def test_ocr_table_columns_are_respected(tmp_path):
     assert diagnostics["code_column_zone"] and diagnostics["supplier_column_zone"], diagnostics
     assert diagnostics["grid_guards"] and report["grid_keep_rects"], diagnostics
     assert report["technical_keep_rects"] and report["technical_keep_diagnostics"], report
+    assert report["allowed_delete_zones"] and report["absolute_keep_zones"], report
     supplier_zone = fitz.Rect(xs[4], ys[1], xs[5], ys[-1])
     assert not [item for item in report["technical_keep_diagnostics"]
                 if (fitz.Rect(item["rect"]) & supplier_zone).get_area() > 0], report
