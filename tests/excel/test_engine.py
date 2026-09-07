@@ -125,7 +125,8 @@ def test_literal_database_rules_and_composite_code(tmp_path):
     result = az.anonymize('Клапан ZZTEST-123-IP66 TESTBRAND DN50', '631-123456')
     assert result['text'] == 'Клапан IP66 DN50'
     assert 'Синтетика' in result['factory']
-    assert result['status'] == 'ЗЕЛЁНЫЙ'
+    assert result['status'] == 'ЖЁЛТЫЙ'
+    assert 'KEEP' in result['reason']
 
 
 def test_missing_database_fails(tmp_path):

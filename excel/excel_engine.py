@@ -57,7 +57,7 @@ TECH_RES = [
     re.compile(r'(?i)(?<!\w)(?:[012]\s*)?Ex[\sa-z]{0,24}?II[ABC]?\s*[TТ][1-6](?:\s*(?:Ga|Gb|Gc|Da|Db|Dc))?(?:\s*[XХU])?(?!\w)'),
     re.compile(r'(?i)(?<!\w)(?:DN|PN|SDR|RAL)\s*[-=]?\s*\d+(?:[.,]\d+)?(?!\w)'),
     re.compile(r'(?i)\b(?:сталь\s+(?:марки\s+)?|ст\.?\s*)[\d][\w.-]*'),
-    re.compile(r'(?<!\w)(?:\d{1,2}[ХГНМСТЮФВБДКР]\w*)(?!\w)'),
+    re.compile(r'(?<!\w)(?:\d{2}[ХГНМСТЮФВБДКР]\w*|\d[ХГНМСТЮФВБДКР]\w+)(?!\w)'),
     re.compile(r'(?i)(?<!\w)[+-]?\d+(?:[.,]\d+)?(?:\s*[xх×*]\s*\d+(?:[.,]\d+)?){1,3}(?:\s*мм)?'),
     re.compile(r'(?i)(?<!\w)[+-]?\d+(?:[.,]\d+)?\s*(?:МПа|кПа|Па|бар|кВ|мВ|В|кВт|Вт|мм|см|км|м|мА|А|Гц|кг|г|мл|л|kV|mV|V|kW|W|mA|A|Hz|kg|mm|°\s*[CС]|град\.?\s*[CС])(?!\w)'),
     re.compile(r'(?i)\b(?:давление|размеры?|температура|напряжение|диаметр)\s*[:=]?\s*(?:от\s*)?[+-]?\d+(?:[.,]\d+)?(?:\s*°?\s*[CС])?(?:\s*до\s*[+-]?\d+(?:[.,]\d+)?)?\s*(?:МПа|кПа|бар|кВ|В|мм|°\s*[CС])?'),
@@ -74,7 +74,7 @@ TECH_RES += [
     re.compile(r'(?i)(?<!\w)Т\d+К\d+(?!\w)'),
     re.compile(r'(?i)(?<!\w)(?:[012I]\s*)?[EЕ][XХ]\s*(?:ia|ib|ic|da|db|dc|d|e|ma|mb|mc|ta|tb|tc)(?!\w)'),
     re.compile(r'(?i)(?<!\w)изм\.\s*\d+(?!\w)'),
-    re.compile(r'(?i)(?<!\w)(?:[DLHSДЛНШ]\s*=?\s*\d+(?:[.,]\d+)?(?:\s*мм)?)(?!\w)'),
+    re.compile(r'(?i)(?<!\w)(?:[DLHSДЛНШ]\s*=\s*\d+(?:[.,]\d+)?(?:\s*мм)?|[DLHSДЛНШ]\s*\d+(?:[.,]\d+)?\s*мм|[DД]\d+(?:[.,]\d+)?)(?!\w)'),
 ]
 
 # REVIEW is deliberately broader than DELETE. A model-shaped token cannot
@@ -298,6 +298,8 @@ class Anonymizer:
         failures = []
         if residuals or RESIDUAL_RE.search(text):
             failures.append('Остался удаляемый признак; возможно пересечение с абсолютным KEEP')
+        elif any(a < y and x < b for a, b, _ in candidates for x, y in keeps):
+            failures.append('Часть удаляемого обозначения сохранена как абсолютный KEEP; проверить остаток')
         if uncertain:
             failures.append('Проверить границы названия организации')
         if any(original[a:b] not in text for a, b in keeps):

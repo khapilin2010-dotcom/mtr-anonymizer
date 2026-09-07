@@ -97,6 +97,18 @@ def test_tu_is_not_a_prefix_of_ordinary_words(az, text):
     assert az.anonymize(z['text'])['text'] == text
 
 
+def test_catalog_model_is_not_a_bare_dimension(az):
+    z = az.anonymize('Изделие S5700-TEST9 DN50', factory='ООО "Техкомпания Хуавэй"')
+    assert z['text'] == 'Изделие DN50'
+
+
+def test_model_keep_collision_stays_yellow_after_brand_is_gone(az):
+    z = az.anonymize('Изделие HAWLE-TEST9-IP66')
+    assert 'HAWLE' not in z['text'] and 'IP66' in z['text']
+    assert z['status'] == 'ЖЁЛТЫЙ'
+    assert 'KEEP' in z['reason']
+
+
 @pytest.mark.parametrize('row', EXTRA_RULES + EXTRA_GLOBAL_RULES,
                          ids=lambda row: row['trigger'])
 def test_confirmed_family_with_engineering_tail(az, row):
