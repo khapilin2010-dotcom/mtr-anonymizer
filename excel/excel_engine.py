@@ -58,8 +58,8 @@ TECH_RES = [
     re.compile(r'(?i)(?<!\w)(?:DN|PN|SDR|RAL)\s*[-=]?\s*\d+(?:[.,]\d+)?(?!\w)'),
     re.compile(r'(?i)\b(?:сталь\s+(?:марки\s+)?|ст\.?\s*)[\d][\w.-]*'),
     re.compile(r'(?<!\w)(?:\d{1,2}[ХГНМСТЮФВБДКР]\w*)(?!\w)'),
-    re.compile(r'(?i)(?<!\w)[+-]?\d+(?:[.,]\d+)?(?:\s*[xх×]\s*\d+(?:[.,]\d+)?){1,3}(?:\s*мм)?'),
-    re.compile(r'(?i)(?<!\w)[+-]?\d+(?:[.,]\d+)?\s*(?:МПа|кПа|Па|бар|кВ|мВ|В|кВт|Вт|мм|см|м|А|Гц|кг|°\s*[CС]|град\.?\s*[CС])(?!\w)'),
+    re.compile(r'(?i)(?<!\w)[+-]?\d+(?:[.,]\d+)?(?:\s*[xх×*]\s*\d+(?:[.,]\d+)?){1,3}(?:\s*мм)?'),
+    re.compile(r'(?i)(?<!\w)[+-]?\d+(?:[.,]\d+)?\s*(?:МПа|кПа|Па|бар|кВ|мВ|В|кВт|Вт|мм|см|км|м|мА|А|Гц|кг|г|мл|л|kV|mV|V|kW|W|mA|A|Hz|kg|mm|°\s*[CС]|град\.?\s*[CС])(?!\w)'),
     re.compile(r'(?i)\b(?:давление|размеры?|температура|напряжение|диаметр)\s*[:=]?\s*(?:от\s*)?[+-]?\d+(?:[.,]\d+)?(?:\s*°?\s*[CС])?(?:\s*до\s*[+-]?\d+(?:[.,]\d+)?)?\s*(?:МПа|кПа|бар|кВ|В|мм|°\s*[CС])?'),
 ]
 
@@ -69,9 +69,12 @@ TECH_RES += [
     re.compile(r'(?i)(?<!\w)(?:[012I]\s*)?[EЕeе][XХxх][\sa-zа-я]{0,24}?II[ABCАВС]?\s*[TТ][1-6](?:\s*(?:Ga|Gb|Gc|Da|Db|Dc))?(?!\w)'),
     re.compile(r'(?i)(?<!\w)II(?:[123]?[GD]|G[abc])\s*II[ABCАВС]\s*[TТ][1-6](?!\w)'),
     re.compile(r'(?i)(?<!\w)(?:Pt|Cu|Ni)\s*\d+(?!\w)'),
-    re.compile(r'(?i)(?<!\w)(?:[12468]|\d{2,})\s*[-–]?\s*(?:шт\.?|компл\.?|водный|гранная|х-проводная)(?!\w)'),
+    re.compile(r'(?i)(?<!\w)\d+\s*[-–]?\s*(?:шт\.?|компл\.?|водный|гранная|х-проводная)(?!\w)'),
     re.compile(r'(?i)(?<!\w)(?:\d+[xх×])?(?:\d+(?:/\d+)*(?:G|M)?BASE-[A-Z0-9]+|\d+GE|[QS]*SFP(?:28|56|\+)?|RJ-?45|RS-?485|RS-?232|USB(?:\s*\d\.\d)?|Bluetooth|GPS|HPL-пластик|Multi-mode|Yellow/Green)(?!\w)'),
     re.compile(r'(?i)(?<!\w)Т\d+К\d+(?!\w)'),
+    re.compile(r'(?i)(?<!\w)(?:[012I]\s*)?[EЕ][XХ]\s*(?:ia|ib|ic|da|db|dc|d|e|ma|mb|mc|ta|tb|tc)(?!\w)'),
+    re.compile(r'(?i)(?<!\w)изм\.\s*\d+(?!\w)'),
+    re.compile(r'(?i)(?<!\w)(?:[DLHSДЛНШ]\s*=?\s*\d+(?:[.,]\d+)?(?:\s*мм)?)(?!\w)'),
 ]
 
 # REVIEW is deliberately broader than DELETE. A model-shaped token cannot
@@ -106,7 +109,11 @@ def merge_ranges(ranges):
 
 
 def protected_ranges(text):
-    ranges = [(m.start(), m.end()) for rx in TECH_RES for m in rx.finditer(text)]
+    # In a calendar date, "2025 г." means year, not a mass in grams.
+    dates = [m.span() for m in re.finditer(
+        rf'(?i)\b(?:\d{{1,2}}\s+{r.MONTHS}\s+\d{{4}}|\d{{1,2}}[./-]\d{{1,2}}[./-]\d{{2,4}})\s*г(?:ода)?\.?', text)]
+    ranges = [(m.start(), m.end()) for rx in TECH_RES for m in rx.finditer(text)
+              if not any(a <= m.start() and m.end() <= b for a, b in dates)]
     for phrase in r.OL_PHRASE_RE.finditer(text):
         # A complete phrase extends through its OL designation, even on new lines.
         end = OL_RE.search(text, phrase.end())

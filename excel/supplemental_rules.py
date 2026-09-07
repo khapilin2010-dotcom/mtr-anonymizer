@@ -74,6 +74,11 @@ EXTRA_GLOBAL_RULES += [
     *[family('Mitsubishi Electric', '', trigger,
              'https://www.mitsubishitech.co.uk/Data/Mr-Slim_Indoor/PEAD-RP/2016/PEAD-RP-JAQ/Leaflet/PEAD-RP_Power_Inverter_IPh/PEAD-RP125JAQ.pdf')
       for trigger in ('PUHZ-ZRP', 'PEAD-RP')],
+    family('ЭЛТЕКС', '', 'Eltex', 'https://eltex-co.com/'),
+    family('Huawei', '', 'Huawei', 'https://e.huawei.com/en/products/switches/campus-switches/s6730-s'),
+    family('РАМЭК', '', 'RAMEC', 'https://www.ramec.ru/produktyi-i-uslugi/kompyuternaya-texnika/kompyuteryi-ramec.html'),
+    family('ВЕЗА', '', 'VEZA', 'https://www.veza.ru/'),
+    family('Армтел', '', 'Armtel', 'https://armtel.com/ru/product/pult-dispetcherskij-top-dis-ip2/'),
 ]
 
 SIMOS = 'https://simos.ru/production/product/m30ae-3u/'

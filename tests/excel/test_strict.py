@@ -81,6 +81,14 @@ def test_extended_keep(az, keep):
     assert 'Унипол' not in z['text']
 
 
+@pytest.mark.parametrize('keep', ['3шт', '5компл', '7шт', '9шт', '50г', '10мл', '4мА',
+                                  '40*60*40', 'Exd', 'Ex db', '220V', 'изм.12', 'D630'])
+def test_attached_brand_never_eats_engineering_values(az, keep):
+    z = az.anonymize('Прибор HAWLE-TEST-' + keep)
+    assert keep in z['text']
+    assert 'HAWLE' not in z['text']
+
+
 @pytest.mark.parametrize('row', EXTRA_RULES + EXTRA_GLOBAL_RULES,
                          ids=lambda row: row['trigger'])
 def test_confirmed_family_with_engineering_tail(az, row):
