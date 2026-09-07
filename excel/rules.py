@@ -108,14 +108,14 @@ ATTACHED_TU_RE = re.compile(
 )
 
 TU_WRAP_RE = re.compile(
-    r"(?<!\w)ТУ\s*[-–—]?\s*"
+    r"(?<!\w)ТУ(?![A-Za-zА-Яа-яЁё])\s*[-–—]?\s*"
     r"(?:(?!(?:DN|PN|IP|ГОСТ|SDR)\b)(?:[A-ZА-Я]{1,4}|\d{1,3})\s+)?"
     r"(?=[A-Za-zА-Яа-я0-9_.\-/]*\d)[A-Za-zА-Яа-я0-9_.\-/–—]*[-–—]"
     r"[ \t]*\n[ \t]*(?=[A-Za-zА-Яа-я0-9_.\-/–—]*\d)[A-Za-zА-Яа-я0-9_.\-/–—]+", re.I
 )
 
 TU_CODE_RE = re.compile(
-    r"(?<!\w)ТУ\s*[-–—]?\s*"
+    r"(?<!\w)ТУ(?![A-Za-zА-Яа-яЁё])\s*[-–—]?\s*"
     r"(?:(?!(?:DN|PN|IP|ГОСТ|SDR)\b)(?:[A-ZА-Я]{1,4}|\d{1,3})\s+)?"
     r"(?=[A-Za-zА-Яа-я0-9_.\-/]*\d)[A-Za-zА-Яа-я0-9_.\-/–—]+"
     # Source tables may split one TU number with spaces around a

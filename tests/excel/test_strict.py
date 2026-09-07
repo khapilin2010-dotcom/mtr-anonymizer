@@ -82,11 +82,19 @@ def test_extended_keep(az, keep):
 
 
 @pytest.mark.parametrize('keep', ['3шт', '5компл', '7шт', '9шт', '50г', '10мл', '4мА',
-                                  '40*60*40', 'Exd', 'Ex db', '220V', 'изм.12', 'D630'])
+                                  '40*60*40', 'Exd', 'Ex db', '220V', 'изм.12', 'D630',
+                                  '1ExdbIIBT4GbX', '1ExdIIC T6 Gb X', 'IIGbIIBT4X'])
 def test_attached_brand_never_eats_engineering_values(az, keep):
     z = az.anonymize('Прибор HAWLE-TEST-' + keep)
     assert keep in z['text']
     assert 'HAWLE' not in z['text']
+
+
+@pytest.mark.parametrize('text', ['Знак дорожный "Тупик"', 'Тумба2', 'Турбина-TEST9', 'Трубка'])
+def test_tu_is_not_a_prefix_of_ordinary_words(az, text):
+    z = az.anonymize(text)
+    assert z['text'] == text
+    assert az.anonymize(z['text'])['text'] == text
 
 
 @pytest.mark.parametrize('row', EXTRA_RULES + EXTRA_GLOBAL_RULES,

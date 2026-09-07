@@ -22,7 +22,7 @@ ROLE_RE = re.compile(r'(?i)\b(?:по\s+технологии|завод|прои�
 # Preserve these without an explicit company attribution; no name classifier.
 AMBIGUOUS_ALIASES = r.GENERIC_TEXT_ALIASES | {
     'прибор', 'канат', 'никель', 'сплав', 'сенсор', 'сила', 'контур',
-    'пульс', 'ресурс', 'метиз', 'волна', 'вектор', 'логика', 'система',
+    'пульс', 'ресурс', 'метиз', 'волна', 'вектор', 'логика', 'система', 'знак',
 }
 
 DOTTED_ORG_RE = re.compile(rf'(?<!\w){LEGAL}(?:\.{LEGAL})*\.[А-ЯЁA-Z]{{2,}}(?!\w)')
@@ -42,7 +42,7 @@ REVERSE_LETTER_RE = re.compile(
     rf'(?i)\b(?:служебн\w*\s+)?письм\w*\s+от\s+'
     rf'(?:\d{{1,2}}\s+{r.MONTHS}\s+\d{{4}}|\d{{1,2}}[./-]\d{{1,2}}[./-]\d{{2,4}})'
     r'(?:\s*г\.?)?\s*№\s*[\w][\w./–—-]*')
-TU_PREFIX_RE = re.compile(r'(?i)(?<!\w)(?:(?:по\s+(?:типу\s+)?|тип\s+))?ТУ\s*№?')
+TU_PREFIX_RE = re.compile(r'(?i)(?<!\w)(?:(?:по\s+(?:типу\s+)?|тип\s+))?ТУ(?![A-Za-zА-Яа-яЁё])\s*№?')
 INN_RE = re.compile(r'(?i)(?<!\w)(?:ИНН|КПП)(?!\w)\s*[:№]?\s*\d*')
 RESIDUAL_RE = re.compile(rf'(?i)(?<!\w)(?:ТУ|{LEGAL}|ИНН|КПП)(?!\w)')
 
@@ -54,7 +54,7 @@ TECH_RES = [
     GOST_RE, OL_RE, OL_NUMBER_RE,
     re.compile(r'(?i)(?<!\w)IP\s*\d{2}[A-Z]?(?!\w)'),
     re.compile(r'(?i)(?<!\w)(?:УХЛ|ХЛ|У|Т)\s*\d(?:\.\d)?(?!\w)'),
-    re.compile(r'(?i)(?<!\w)(?:[012]\s*)?Ex[\sa-z]{0,24}?II[ABC]?\s*[TТ][1-6](?:\s*(?:Ga|Gb|Gc|Da|Db|Dc))?(?!\w)'),
+    re.compile(r'(?i)(?<!\w)(?:[012]\s*)?Ex[\sa-z]{0,24}?II[ABC]?\s*[TТ][1-6](?:\s*(?:Ga|Gb|Gc|Da|Db|Dc))?(?:\s*[XХU])?(?!\w)'),
     re.compile(r'(?i)(?<!\w)(?:DN|PN|SDR|RAL)\s*[-=]?\s*\d+(?:[.,]\d+)?(?!\w)'),
     re.compile(r'(?i)\b(?:сталь\s+(?:марки\s+)?|ст\.?\s*)[\d][\w.-]*'),
     re.compile(r'(?<!\w)(?:\d{1,2}[ХГНМСТЮФВБДКР]\w*)(?!\w)'),
@@ -66,8 +66,8 @@ TECH_RES = [
 # These are engineering values, including forms found inside model strings.
 TECH_RES += [
     re.compile(r'(?i)(?<!\w)(?:ОСТ|СТО|DIN|ISO|IEC|EN|ASTM)(?:\s+Р)?\s+\d[\w./–—-]*(?:\s+\d[\w./–—-]*)?'),
-    re.compile(r'(?i)(?<!\w)(?:[012I]\s*)?[EЕeе][XХxх][\sa-zа-я]{0,24}?II[ABCАВС]?\s*[TТ][1-6](?:\s*(?:Ga|Gb|Gc|Da|Db|Dc))?(?!\w)'),
-    re.compile(r'(?i)(?<!\w)II(?:[123]?[GD]|G[abc])\s*II[ABCАВС]\s*[TТ][1-6](?!\w)'),
+    re.compile(r'(?i)(?<!\w)(?:[012I]\s*)?[EЕeе][XХxх][\sa-zа-я]{0,24}?II[ABCАВС]?\s*[TТ][1-6](?:\s*(?:Ga|Gb|Gc|Da|Db|Dc))?(?:\s*[XХU])?(?!\w)'),
+    re.compile(r'(?i)(?<!\w)II(?:[123]?[GD]|G[abc])\s*II[ABCАВС]\s*[TТ][1-6](?:\s*[XХU])?(?!\w)'),
     re.compile(r'(?i)(?<!\w)(?:Pt|Cu|Ni)\s*\d+(?!\w)'),
     re.compile(r'(?i)(?<!\w)\d+\s*[-–]?\s*(?:шт\.?|компл\.?|водный|гранная|х-проводная)(?!\w)'),
     re.compile(r'(?i)(?<!\w)(?:\d+[xх×])?(?:\d+(?:/\d+)*(?:G|M)?BASE-[A-Z0-9]+|\d+GE|[QS]*SFP(?:28|56|\+)?|RJ-?45|RS-?485|RS-?232|USB(?:\s*\d\.\d)?|Bluetooth|GPS|HPL-пластик|Multi-mode|Yellow/Green)(?!\w)'),
