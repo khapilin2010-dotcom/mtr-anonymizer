@@ -11,9 +11,18 @@ from excel import rules as r
 
 LEGAL = r'(?:ООО|ПАО|ОАО|ЗАО|АО|НПО|НПП|ФГУП)'
 LEGAL_RE = re.compile(rf'(?i)(?<!\w){LEGAL}(?!\w)')
+TECH_START = r'(?:ГОСТ|ТУ|IP\s*\d|DN\s*\d|PN\s*\d|Ex|УХЛ|сталь|Ст\.|давление|температура|напряжение|размер|труба|кабель|диаметр)'
 QUOTED_ORG_RE = re.compile(
     rf'(?i)(?<!\w){LEGAL}(?:[.\s]+{LEGAL})*[.\s]*'
-    r'(?:"[^"\n]+"|«[^»\n]+»|“[^”\n]+”)')
+    rf'(?:"[^;\n]{{1,180}}?"(?=\s*(?:[,;.]|{TECH_START}|$))|«[^»\n]+»|“[^”\n]+”)')
+ROLE_RE = re.compile(r'(?i)\b(?:по\s+технологии|завод|производитель|изготовитель|поставщик|производства)\s*[:=–—-]?\s*$')
+# Literal technical words that also occur as company aliases in the database.
+# Preserve these without an explicit company attribution; no name classifier.
+AMBIGUOUS_ALIASES = r.GENERIC_TEXT_ALIASES | {
+    'прибор', 'канат', 'никель', 'сплав', 'сенсор', 'сила', 'контур',
+    'пульс', 'ресурс', 'метиз', 'волна', 'вектор', 'логика', 'система',
+}
+
 DOTTED_ORG_RE = re.compile(rf'(?<!\w){LEGAL}(?:\.{LEGAL})*\.[А-ЯЁA-Z]{{2,}}(?!\w)')
 # A legal form followed by title-case words is an explicit company attribution.
 # Stop before a technical term; never eat arbitrary lower-case description.
@@ -98,7 +107,7 @@ class Anonymizer:
             alias = r.normalize_name(row['alias'])
             inn = str(row.get('inn', ''))
             self.names.setdefault(inn, row.get('manufacturer', ''))
-            if len(alias) < 7 or alias in r.GENERIC_TEXT_ALIASES:
+            if len(alias) < 3 or alias in AMBIGUOUS_ALIASES:
                 continue
             words = re.findall(r'\w+', alias)
             if words:
@@ -178,6 +187,11 @@ class Anonymizer:
         uncertain_org = any(not any(a <= m.start() and m.end() <= b and label == 'производитель'
                                      for a, b, label in candidates)
                             for m in LEGAL_RE.finditer(text))
+        for a, b, label in list(candidates):
+            if label in ('производитель', 'бренд'):
+                role = ROLE_RE.search(text[:a])
+                if role:
+                    candidates.append((role.start(), a, 'обозначение производителя'))
         candidates.extend((*m.span(), 'юридическая форма') for m in LEGAL_RE.finditer(text))
         active = list(self.global_rules)
         for i in inns:
@@ -235,7 +249,7 @@ class Anonymizer:
             raise AssertionError('Потеря абсолютного KEEP')
         if not text.strip():
             failures.append('Наименование стало пустым')
-        if not manufacturers and not removed:
+        if not manufacturers:
             failures.append('Производитель не определён')
         if text != original and not removed:
             # Whitespace-only formatting is not anonymization.

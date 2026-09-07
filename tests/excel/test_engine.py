@@ -135,3 +135,29 @@ def test_missing_database_fails(tmp_path):
 
 def test_no_manufacturer_is_not_assumed_safe(az):
     assert az.anonymize('Клапан неизвестной марки DN50')['status'] == 'ЖЁЛТЫЙ'
+
+
+@pytest.mark.parametrize('brand', ['Хакель','ПТИМаш','БРОЕН','Сименс','АББ','ДКС','Роквул','Гусар'])
+def test_short_database_manufacturers_removed(az,brand):
+    result=az.anonymize(f'Клапан {brand} ТУ 123-45 IP66')
+    assert result['text']=='Клапан IP66'
+    assert result['factory']
+
+
+@pytest.mark.parametrize('technical',['Прибор','канат','никель','сплав','сенсор'])
+def test_technical_nouns_are_not_company_mentions(az,technical):
+    result=az.anonymize(f'{technical} Унипол IP66')
+    assert result['text']==f'{technical} IP66'
+
+
+@pytest.mark.parametrize('org', ['ООО "НПО "Тест" Завод"','ООО "НПО "Тест""','ООО "Тестовый завод"'])
+def test_nested_company_quotes(az,org):
+    result=az.anonymize(f'Клапан производитель {org} DN50')
+    assert result['text']=='Клапан DN50'
+    assert '"' not in result['text']
+
+
+def test_tu_removal_alone_does_not_prove_manufacturer_absent(az):
+    result=az.anonymize('Клапан НЕИЗВЕСТНЫЙБРЕНД ТУ 123-45 IP66')
+    assert result['status']=='ЖЁЛТЫЙ'
+    assert 'ТУ' not in result['text']

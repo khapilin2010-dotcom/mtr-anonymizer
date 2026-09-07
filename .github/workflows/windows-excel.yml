@@ -56,7 +56,7 @@ jobs:
         run: |
           $target = Join-Path $env:RUNNER_TEMP 'Русская папка с пробелами'
           Expand-Archive package/MTR_Excel_Windows.zip -DestinationPath $target
-          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+          $env:PATH = $target
           Remove-Item Env:PYTHONHOME -ErrorAction SilentlyContinue
           Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
           if (Get-Command python, python3, py -ErrorAction SilentlyContinue) { throw 'External Python is visible' }
