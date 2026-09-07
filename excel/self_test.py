@@ -9,6 +9,7 @@ import tempfile
 from common.database import database_path
 from excel.excel_engine import Anonymizer
 from excel.file_io import process_file
+from excel.supplemental_rules import EXTRA_RULES, EXTRA_GLOBAL_RULES, supplemental_digest
 
 
 def run():
@@ -18,6 +19,7 @@ def run():
     az = Anonymizer()
     assert len(az.registry) > 100000, 'Incomplete registry'
     assert sum(map(len, az.rules_by_inn.values())) >= 500, 'Incomplete rules'
+    assert az.anonymize('Клапан HAWLE-TEST9 DN50')['text'] == 'Клапан DN50'
     keep = 'IP66 УХЛ1 Ex d IIC T6 DN50 PN16 ГОСТ 8732-78'
     source = f'Клапан ООО "Тестовый завод" ТУ 1234-567 {keep} № TEST-123 от 4 апреля 2025 г.'
     cleaned = az.anonymize(source)
@@ -62,6 +64,8 @@ def run():
         import tkinter as tk
         root=tk.Tk();root.withdraw();root.update();root.destroy()
     assert not any(n in sys.modules for n in ('mtr_core','MTR_Obezlichivatel','fitz','pymupdf'))
-    return {'result':'SELF_TEST_OK','version':'1.0 RC1','frozen':bool(getattr(sys,'frozen',False)),
+    return {'result':'SELF_TEST_OK','version':'1.1 RC2','frozen':bool(getattr(sys,'frozen',False)),
             'database':'mtr_data.json.gz','database_sha256':hashlib.sha256(database_path().read_bytes()).hexdigest(),
-            'registry_count':len(az.registry),'formats':tested,'source_unchanged':True}
+            'registry_count':len(az.registry),'formats':tested,'source_unchanged':True,
+            'supplemental_sha256':supplemental_digest(),
+            'supplemental_rule_count':len(EXTRA_RULES) + len(EXTRA_GLOBAL_RULES)}

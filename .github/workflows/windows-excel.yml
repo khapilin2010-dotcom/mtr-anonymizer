@@ -32,6 +32,7 @@ jobs:
           Copy-Item excel/README.md release/README.md
           $hash = (Get-FileHash mtr_data.json.gz -Algorithm SHA256).Hash.ToLower()
           $hash | Set-Content release/database.sha256
+          python -c "from excel.supplemental_rules import supplemental_digest; print(supplemental_digest())" | Set-Content release/supplemental.sha256
           "${{ github.sha }}" | Set-Content release/commit.txt
           Compress-Archive -Path release/* -DestinationPath MTR_Excel_Windows.zip
       - name: Upload build for isolated runtime test
@@ -71,6 +72,8 @@ jobs:
           if ($result.result -ne 'SELF_TEST_OK' -or !$result.frozen) { throw 'Frozen self-test failed' }
           $expected = (Get-Content (Join-Path $target 'database.sha256') -Raw).Trim()
           if ($result.database_sha256 -ne $expected -or $result.registry_count -lt 100000) { throw 'Database mismatch' }
+          $extra = (Get-Content (Join-Path $target 'supplemental.sha256') -Raw).Trim()
+          if ($result.supplemental_sha256 -ne $extra -or $result.supplemental_rule_count -lt 100) { throw 'Supplemental rules mismatch' }
           if ($result.formats.Count -ne 4 -or !$result.source_unchanged) { throw 'Format checks failed' }
           Copy-Item $marker package/SELF_TEST_OK.json
       - name: Publish verified Windows ZIP
