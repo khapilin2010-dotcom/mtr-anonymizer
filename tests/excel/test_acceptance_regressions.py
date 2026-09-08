@@ -34,6 +34,12 @@ def test_units_before_values_are_retained(az, unit, separator):
     assert az.anonymize(text + ' Унипол')['text'] == text
 
 
+def test_model_prefix_is_not_a_unit_label(az):
+    from excel.excel_engine import protected_ranges
+    assert not protected_ranges('МА-987-654')
+    assert not protected_ranges('В-987')
+
+
 @pytest.mark.parametrize('noun', ['Агрегат', 'Звезда', 'Элемент', 'Контактор', 'КВТ'])
 def test_explicit_company_is_still_removed(az, noun):
     result = az.anonymize('Изделие ООО "' + noun + '" IP66')

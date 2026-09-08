@@ -80,7 +80,9 @@ TECH_RES = [
 # These are engineering values, including forms found inside model strings.
 TECH_RES += [
     # Units may precede a value in parameter labels, not only follow a number.
-    re.compile(r'(?i)(?<!\w)(?:кВт|кВА|кВАр|МВт|Вт|кВ|В|мА|А|Гц|кг|мм|см|МПа|кПа|Па|бар)'
+    re.compile(r'(?i)\b(?:мощность|напряжение|ток|частота|масса|длина|ширина|высота|давление|параметр)'
+               r'(?:\s+[а-яё]+){0,4}\s*,?\s*'
+               r'(?:кВт|кВА|кВАр|МВт|Вт|кВ|В|мА|А|Гц|кг|мм|см|МПа|кПа|Па|бар)'
                r'(?=\s*[:=–—-]\s*\d)'),
     re.compile(r'(?i)(?<!\w)(?:Масса\s*[-:=]?\s*)?[+-]?\d+(?:[.,]\d+)?\s*т\.(?!\w)'),
     re.compile(r'(?i)(?<!\w)(?:Масса\s*[-:=]?\s*)?[+-]?\d+(?:[.,]\d+)?\s*т(?!\w)'),
