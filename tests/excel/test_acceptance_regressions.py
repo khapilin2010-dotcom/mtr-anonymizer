@@ -44,7 +44,7 @@ def test_registry_identity_does_not_turn_nouns_into_brands(tmp_path):
     db = dict(version='synthetic', registry={'999999991': 'ООО "Элемент"'},
               aliases=[dict(alias='Элемент', manufacturer='ООО "Элемент"', inn='')],
               rules=[dict(manufacturer='ООО "Элемент"', inn='', trigger='QZS.', apply='Полный код КД')],
-              global_unique_rules=[])
+              global_unique_rules=[dict(trigger='UNUSED_SYNTHETIC_BRAND', apply='Точное совпадение')])
     path = tmp_path / 'database.json.gz'
     with gzip.open(path, 'wt', encoding='utf-8') as stream:
         json.dump(db, stream)
