@@ -36,11 +36,8 @@ def find_header(rows):
 
 
 def select_titles(titles):
-    keys = {t: norm_header(t.replace('_', ' ')) for t in titles}
-    for preferred in ('готово', 'выборка оборудования'):
-        chosen = [t for t, key in keys.items() if key == preferred]
-        if chosen:
-            return chosen
+    # Header detection decides eligibility. A preferred sheet must not hide
+    # another resource table in the same workbook.
     return list(titles)
 
 

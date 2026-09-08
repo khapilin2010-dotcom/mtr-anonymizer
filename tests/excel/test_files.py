@@ -128,16 +128,16 @@ def test_xlsm_vba_archive_preserved(tmp_path, az):
     assert report['rows'] == 1
 
 
-def test_only_preferred_sheet_processed(tmp_path, az):
+def test_all_resource_sheets_processed(tmp_path, az):
     src=tmp_path/'sheets.xlsx';wb=Workbook();wb.active.title='выборка_оборудования_все'
     for title in ['Выборка оборудования','Готово']: wb.create_sheet(title)
     for ws in wb:
         ws.append(['Код','Наименование']);ws.append(['1','Клапан Унипол IP66'])
     wb.save(src);dst,report=process_file(src,tmp_path,az);out=load_workbook(dst)
-    assert report['sheets']==1
+    assert report['sheets']==3
     assert out['Готово'].max_column==6
-    assert out['Выборка оборудования'].max_column==2
-    assert out['выборка_оборудования_все'].max_column==2
+    assert out['Выборка оборудования'].max_column==6
+    assert out['выборка_оборудования_все'].max_column==6
 
 
 def test_generated_equals_text_is_not_formula(tmp_path,az):

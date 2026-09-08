@@ -68,7 +68,7 @@ def _boundary_pattern(phrase: str, mode: str) -> str:
     if mode in ("Начало фирменного обозначения", "Слитное/дефисное обозначение", "Полный код КД"):
         # Aero IXIA model prefix occurs in both Latin and Cyrillic spelling.
         if phrase.upper() == "AI-":
-            return left + r"(?:AI-|АИ-)[A-Za-zА-Яа-я0-9][A-Za-zА-Яа-я0-9._/+*\-,]*"
+            return left + r"[AА][IИ]-[A-Za-zА-Яа-я0-9][A-Za-zА-Яа-я0-9._/+*\-,]*"
         # KD prefixes in estimates are sometimes written both with a dot and
         # with a space: "ЖНКЮ.464429.018" / "ЖНКЮ 464429.018".
         # Match only the designation itself so a closing bracket or quantity
@@ -92,7 +92,7 @@ def _alias_pattern(alias: str) -> str:
 MONTHS = r"(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)"
 
 LETTER_TAIL_RE = re.compile(
-    rf"(?i)(?<![\w])(?:ВО\s*)?№\s*[A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9._/\-–—]{{2,50}}"
+    rf"(?i)(?:ВО\s*)?№\s*[A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9._/\-–—]{{2,50}}"
     rf"\s+от\s+(?:\d{{1,2}}\s+{MONTHS}\s+\d{{4}}|\d{{1,2}}[.]\d{{1,2}}[.]\d{{2,4}})\s*г?[.]?"
     r"(?:\s*,?\s*(?:п|поз)[.]?\s*\d+(?:[.]\d+)*)?"
 )

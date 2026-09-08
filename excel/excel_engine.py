@@ -16,14 +16,28 @@ LEGAL_RE = re.compile(rf'(?i)(?<!\w){LEGAL}(?!\w)')
 TECH_START = r'(?:ГОСТ|ТУ|IP\s*\d|DN\s*\d|PN\s*\d|Ex|УХЛ|сталь|Ст\.|давление|температура|напряжение|размер|труба|кабель|диаметр)'
 QUOTED_ORG_RE = re.compile(
     rf'(?i)(?<!\w){LEGAL}(?:[.\s]+{LEGAL})*[.\s]*'
-    rf'(?:"[^;\n]{{1,180}}?"(?=\s*(?:[,;.]|{TECH_START}|$))|«[^»\n]+»|“[^”\n]+”)')
-ROLE_RE = re.compile(r'(?i)\b(?:по\s+технологии|завод|производитель|изготовитель|поставщик|производства)\s*[:=–—-]?\s*$')
+    rf'(?:"[^;\n]{{1,180}}?"(?=\s*(?:[,;.]|{TECH_START}|[а-яё-]+\s+филиал\b|$))|«[^»\n]+»|“[^”\n]+”)'
+    r'(?:\s+[а-яё-]+\s+филиал\b)?')
+ROLE_RE = re.compile(r'(?i)\b(?:по\s+технологии|завод|производитель|изготовитель|поставщик|производства|разработчик)\s*[:=–—-]?\s*$')
 # Literal technical words that also occur as company aliases in the database.
 # Preserve these without an explicit company attribution; no name classifier.
 AMBIGUOUS_ALIASES = r.GENERIC_TEXT_ALIASES | {
     'прибор', 'канат', 'никель', 'сплав', 'сенсор', 'сила', 'контур',
     'пульс', 'ресурс', 'метиз', 'волна', 'вектор', 'логика', 'система', 'знак',
+    'агрегат', 'блок-бокс', 'элемент', 'звезда', 'квт', 'счетчик',
+    'контактор', 'полюс', 'вст', 'эхз', 'сбп',
 }
+
+
+def explicit_alias_context(text, start, end):
+    """Ambiguous dictionary words need attribution in THIS occurrence.
+
+    A registry match elsewhere must never turn an engineering noun into a brand.
+    The factory field uses a separate trusted lookup path.
+    """
+    prefix = text[:start]
+    return bool(re.search(rf'(?i)(?<!\w){LEGAL}\s*["«“]?\s*$', prefix)
+                or ROLE_RE.search(prefix.rstrip('"«“ ')))
 
 DOTTED_ORG_RE = re.compile(rf'(?<!\w){LEGAL}(?:\.{LEGAL})*\.[А-ЯЁA-Z]{{2,}}(?!\w)')
 # A legal form followed by title-case words is an explicit company attribution.
@@ -34,7 +48,7 @@ BARE_ORG_RE = re.compile(
     r'(?:\s+(?!(?:ГОСТ|ТУ|IP|DN|PN|Ex|УХЛ)\b)[А-ЯЁA-Z][а-яёa-zА-ЯЁA-Z0-9&-]*){0,6}')
 REGISTER_RE = re.compile(r'(?i)\bРеестр\s+МТР\s+(?:ПАО\s+)?Газпром\s*№\s*[\w./-]+')
 LETTER_RE = re.compile(
-    rf'(?i)(?<!\w)(?:(?:служебн\w*\s+)?письм\w*\s*)?(?:ВО\s*)?№\s*'
+    rf'(?i)(?:(?<!\w)(?:служебн\w*\s+)?письм\w*\s*)?(?:ВО\s*)?№\s*'
     rf'[\w][\w./–—-]{{0,79}}\s+от\s+'
     rf'(?:\d{{1,2}}\s+{r.MONTHS}\s+\d{{4}}|\d{{1,2}}[./-]\d{{1,2}}[./-]\d{{2,4}})'
     r'(?:\s*г(?:ода)?\.?)?')
@@ -65,6 +79,12 @@ TECH_RES = [
 
 # These are engineering values, including forms found inside model strings.
 TECH_RES += [
+    # Units may precede a value in parameter labels, not only follow a number.
+    re.compile(r'(?i)(?<!\w)(?:кВт|кВА|кВАр|МВт|Вт|кВ|В|мА|А|Гц|кг|мм|см|МПа|кПа|Па|бар)'
+               r'(?=\s*[:=–—-]\s*\d)'),
+    re.compile(r'(?i)(?<!\w)(?:Масса\s*[-:=]?\s*)?[+-]?\d+(?:[.,]\d+)?\s*т\.(?!\w)'),
+    re.compile(r'(?i)(?<!\w)(?:Масса\s*[-:=]?\s*)?[+-]?\d+(?:[.,]\d+)?\s*т(?!\w)'),
+    re.compile(r'(?i)(?<!\w)\d+(?:[.,]\d+)?\s*(?:кВА|кВАр|МВт|кА|Ач|м3/ч(?:ас)?|м³/ч|м3|м²|м2)(?!\w)'),
     re.compile(r'(?i)(?<!\w)(?:ОСТ|СТО|DIN|ISO|IEC|EN|ASTM)(?:\s+Р)?\s+\d[\w./–—-]*(?:\s+\d[\w./–—-]*)?'),
     re.compile(r'(?i)(?<!\w)(?:[012I]\s*)?[EЕeе][XХxх][\sa-zа-я]{0,24}?II[ABCАВС]?\s*[TТ][1-6](?:\s*(?:Ga|Gb|Gc|Da|Db|Dc))?(?:\s*[XХU])?(?!\w)'),
     re.compile(r'(?i)(?<!\w)II(?:[123]?[GD]|G[abc])\s*II[ABCАВС]\s*[TТ][1-6](?:\s*[XХU])?(?!\w)'),
@@ -81,6 +101,7 @@ TECH_RES += [
 # certify its own anonymity merely because a manufacturer was identified.
 REVIEW_TOKEN_RE = re.compile(r'(?<!\w)[\w]+(?:[-./+][\w]+)*(?!\w)')
 TECH_WORDS = set('SFP QSFP RJ UTP STP GE GbE STM Serial Ethernet LAN WAN AC DC FM LC SC SM MM DDM TX RX PoE Wi Fi IP DN PN SDR RAL ГОСТ ОСТ ТУ УХЛ ХЛ LED LCD PVC PE HDPE ПВХ ПНД ПЭ МПа кПа мм см кг кВт кВ Гц USB GPS Bluetooth'.casefold().split())
+TECH_WORDS.update('ЗРА САУ ППУ ОЦ УКРМ АВР ДЭС СОПТ ОПН ЭХЗ КТП БКТП ТНВД АБС'.casefold().split())
 
 
 def review_tokens(text):
@@ -92,7 +113,7 @@ def review_tokens(text):
         token = match.group()
         if token.casefold() in TECH_WORDS or not re.search(r'[A-Za-zА-Яа-яЁё]', token):
             continue
-        if (re.search(r'\d', token) or '-' in token or
+        if (re.search(r'\d', token) or
                 re.search(r'[A-ZА-ЯЁ]{3,}', token) or re.search(r'[A-Za-z]{3,}', token)):
             tokens.append(token)
     return list(dict.fromkeys(tokens))
@@ -143,6 +164,7 @@ class Anonymizer:
         self.rules_by_inn = defaultdict(list)
         self.rules_by_name = defaultdict(list)
         self.global_rules = []
+        self.global_manufacturers = []
         rows = list(data['rules']) + list(EXTRA_RULES if data_file is None else ())
         self.rule_count = len(rows)
         alias_rows = list(data['aliases']) + [dict(row, alias=row['manufacturer']) for row in rows]
@@ -150,7 +172,7 @@ class Anonymizer:
             alias = r.normalize_name(row['alias'])
             inn = str(row.get('inn') or '') or 'name:' + r.normalize_name(row.get('manufacturer', ''))
             self.names.setdefault(inn, row.get('manufacturer', ''))
-            if len(alias) < 3 or alias in AMBIGUOUS_ALIASES:
+            if len(alias) < 3:
                 continue
             words = re.findall(r'\w+', alias)
             if words:
@@ -168,6 +190,8 @@ class Anonymizer:
             pattern = self._compile_rule(row)
             if pattern:
                 self.global_rules.append(pattern)
+                if row.get('manufacturer'):
+                    self.global_manufacturers.append((pattern, row['manufacturer']))
 
     @staticmethod
     def _compile_rule(row):
@@ -184,7 +208,7 @@ class Anonymizer:
         inn = r.extract_inn(factory)
         if inn and inn in self.names:
             return factory, inn
-        matches = self._aliases(factory)
+        matches = self._aliases(factory, factory_field=True)
         if matches:
             longest = matches[0][1] - matches[0][0]
             identities = {i for a, b, i in matches if b - a == longest}
@@ -193,13 +217,16 @@ class Anonymizer:
                 return factory or self.names.get(key, ''), key
         return factory, ''
 
-    def _aliases(self, text):
+    def _aliases(self, text, factory_field=False):
         # Match against original characters to retain exact deletion offsets.
         found = []
         words = set(re.findall(r'\w+', text.lower().replace('ё', 'е')))
         for word in words:
             for alias, inn, pattern in self.alias_index.get(word, []):
                 for m in pattern.finditer(text):
+                    if (alias in AMBIGUOUS_ALIASES and not factory_field
+                            and not explicit_alias_context(text, m.start(), m.end())):
+                        continue
                     found.append((m.start(), m.end(), inn))
         return sorted(found, key=lambda x: -(x[1] - x[0]))
 
@@ -212,6 +239,12 @@ class Anonymizer:
         manufacturers = [resolved] if resolved else []
         manufacturers += [self.names[i] for i in sorted(inns) if self.names.get(i)]
         candidates = []
+        for pattern, manufacturer in self.global_manufacturers:
+            for match in pattern.finditer(text):
+                manufacturers.append(manufacturer)
+                role = ROLE_RE.search(text[:match.start()])
+                if role:
+                    candidates.append((role.start(), match.start(), 'обозначение производителя'))
         for a, b, _ in aliases:
             candidates.append((a, b, 'производитель'))
             # Extend confirmed aliases only through attached designation parts.
@@ -292,6 +325,7 @@ class Anonymizer:
         text = re.sub(r'\s+', ' ', text).strip(' ,;')
         text = re.sub(r'\s+([,;])', r'\1', text)
         text = re.sub(r'([,;])(?:\s*[,;])+', r'\1', text)
+        text = re.sub(r'[,;]\s*\.', '.', text)
         for marker, value in protected_values:
             text = text.replace(marker, value)
         residuals, _, _ = self._candidates(text, code, factory)

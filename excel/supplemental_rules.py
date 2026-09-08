@@ -48,6 +48,20 @@ EXTRA_RULES = [
 
 # Distinctive brand names can identify equipment even through a reseller.
 EXTRA_GLOBAL_RULES = [
+    *[family('Световые технологии', '', 'PRIZMA/' + variant,
+             'https://www.ltcompany.com/en/series/prizma-' + variant.lower(),
+             r'(?<!\w)PRIZMA/' + variant + r'(?!\w)(?:\s+(?:300|595|1200)(?!\d)(?!\s*[xх×]))?(?:\s+(?:HFD\s+)?EM\b)?')
+      for variant in ('R', 'S')],
+    family('IEK GROUP', '', 'IEK', 'https://www.iek.ru/company/brandbook/',
+           r'(?<!\w)IEK(?!\w)'),
+    family('IEK GROUP', '', 'ИЭК', 'https://www.iek.ru/company/',
+           r'(?<!\w)ИЭК(?!\w)'),
+    family('Schneider Electric', '', 'Schneider Electric', 'https://www.se.com/ww/en/',
+           r'(?<!\w)Schneider\s+Electric(?!\w)'),
+    family('КЭАЗ', '', 'OptiDin', 'https://keaz.ru/catalog/ustroystva-na-din-reyku/modulnie-avtomaticheskie-vikluchateli',
+           r'(?<!\w)OptiDin(?!\w)(?:\s+(?:[BВ][MМ]63|DМ?63|DM63)[\w./+\-]*)?'),
+    family('Группа Астра', '', 'Astra Linux', 'https://astralinux.ru/os/',
+           r'(?<!\w)Astra\s+Linux(?:\s+(?:Special|Common)\s+Edition)?(?!\w)'),
     family('Hawle', '', 'HAWLE', HAWLE),
     family('АО "Арктические технологии"', '', 'АРКТЕХ', 'https://arctex.ru/'),
     family('НПП ТЭК', '', 'РэмТЭК', 'https://old.npptec.ru/documents.php?id=969&uid=75'),
