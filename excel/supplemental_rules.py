@@ -212,6 +212,52 @@ EXTRA_GLOBAL_RULES += [family('', '', 'Код изделия / КД по ГОС�
     'https://www.gostinfo.ru/Qa/Details/460',
     r'(?<!\w)(?!ГОСТ)(?-i:[А-ЯЁ]{4})[. ]\s*\d{6}\.\d{3}(?:-\d{1,3})?(?:(?:ПС|РЭ|СБ|ТУ|ИЭ)\d{0,2})?(?!\w)')]
 
+
+# RC5: exact catalog families; no supplier inferred from shared electrical series.
+EXTRA_GLOBAL_RULES += [
+    family('', '', 'СЭТ-4ТМ', 'https://nzif.ru/uploads/sel/psch4tm03m/ruk_03_02_m.pdf',
+           r'(?<!\w)СЭТ-4ТМ(?:\.\d{2}[МM]?(?:\.\d{2})?)?(?!\w)'),
+    family('', '', 'ПМЛ', 'https://keaz.ru/catalog/kontaktor-pusk/kontaktori-puskateli-rele/pml-kontaktori-puskateli-s-katushkami-upravleniya-peremennim-i-postoyannim-tokom-na-toki-ot-10a-do-400',
+           r'(?<!\w)ПМЛ(?:-\d[\w.-]*)?(?!\w)'),
+    family('', '', 'РТЛ', 'https://keaz.ru/catalog/kontaktor-pusk/kontaktori-puskateli-rele/rtl-rele-peregruzki-teplovie-na-toki-ot-25a-do-500',
+           r'(?<!\w)РТЛ-\d[\w.-]*(?!\w)'),
+    family('', '', 'ВА57', 'https://keaz.ru/catalog/automat/avtomaticheskie-viklyuchateli-v-litom-korpuse/va57-blochnie-avtomaticheskie-vikluchateli-na-toki-ot-16a-do-630a',
+           r'(?<!\w)ВА57-\d[\w.-]*(?!\w)'),
+    family('Эридан', '', 'ИП535-07е', 'https://eridan.ru/catalog/ex-izveshateli/manual_ipr/',
+           r'(?<!\w)ИП\s*535-07[еe][аa]?(?:-(?:RS|R2|R3|О|O))?(?!\w)'),
+]
+EXTRA_RULES += [
+    family('ООО "ВЕЗА"', '7720040225', 'MV220',
+           'https://ventilyatorov.ru/files/protizopozharniye-klapany-i-oborudovaniye-veza.pdf',
+           r'(?<!\w)[МM][VВBS](?=(?:220|24)(?!\w))'),
+    family('ООО "АЭРО ИКСИА"', '3257017280', 'СКВ',
+           'https://nanocertifica.ru/news/provedena-sertifikatsiya-skv-aero-iksian/',
+           r'(?<!\w)СКВ(?!\w)'),
+    family('АО "Сантехпром"', '7718014490', 'РБС',
+           'https://santexprom.ru/catalog/radiator-rbs-500-ch-95-a01.html',
+           r'(?<!\w)РБС(?=-\d)'),
+]
+# Cyrillic spelling of the documented TOTEM series.
+EXTRA_RULES += [family('Световые технологии', inn, 'ТОТЕМ',
+                       'https://www.ltcompany.com/series/totem', r'(?<!\w)ТОТЕМ(?!\w)')
+                for inn in ('6229028102', '7715723321')]
+
+
+LT_CATALOG = 'https://rospolus.ru/doc/svet/svetovie_tech/LT_CATALOG.pdf'
+EXTRA_RULES += [family('Световые технологии', inn, token, LT_CATALOG,
+                       r'(?<!\w)' + re.escape(token) + r'(?!\w)')
+                for inn in ('6229028102', '7715723321')
+                for token in ('FREGAT', 'PIPE', 'MIZAR', 'LZ.OPL', 'ALD', 'URAN', 'INSEL')]
+EXTRA_RULES += [family('Световые технологии', inn, token, LT_CATALOG, pattern)
+                for inn in ('6229028102', '7715723321')
+                for token, pattern in (
+                    ('ПЭУ 010', r'(?<!\w)ПЭУ\s*(?:00[1-8]|010|011|012|09[1-4])(?!\w)'),
+                    ('ППБ 0001', r'(?<!\w)ППБ\s*000[1-4](?!\w)'))]
+EXTRA_RULES += [family('НПП ЭЛЕМЕР', '5044003551', token,
+                       'https://www.elemer.ru/catalog/datchiki-temperatury/termometry-soprotivleniya/ts/',
+                       r'(?<!\w)' + re.escape(token) + r'(?!\w)')
+                for token in ('ТС-1088', 'ТС-1288', 'ТС-1388', 'ТС-0295')]
+
 def supplemental_digest():
     return hashlib.sha256(json.dumps(EXTRA_RULES + EXTRA_GLOBAL_RULES + REVIEWED_KEEP,
                                      ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()

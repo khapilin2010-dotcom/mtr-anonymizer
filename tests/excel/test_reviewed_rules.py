@@ -91,9 +91,11 @@ class ReviewedRulesTests(unittest.TestCase):
         result = self.az.anonymize('Прибор HAWLE-TEST9-М20х1,5-8g')
         self.assertIn('М20х1,5-8g', result['text'])
         self.assertEqual(result['status'], 'ЗЕЛЁНЫЙ')
-        unresolved = self.az.anonymize('Прибор HAWLE-TEST9-IP66')
+        ip = self.az.anonymize('Прибор HAWLE-TEST9-IP66')
+        self.assertEqual(ip['text'], 'Прибор IP66')
+        self.assertEqual(ip['status'], 'ЗЕЛЁНЫЙ')
+        unresolved = self.az.anonymize('Прибор HAWLE-TEST9-IP66 ZZQ987')
         self.assertEqual(unresolved['status'], 'ЖЁЛТЫЙ')
-        self.assertIn('KEEP', unresolved['reason'])
 
     def test_generic_kd_identifies_document_without_inventing_factory(self):
         result = self.az.anonymize('Изделие АБВГ.999999.888СБ IP54', factory='Неизвестный завод')

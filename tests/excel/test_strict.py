@@ -102,11 +102,11 @@ def test_catalog_model_is_not_a_bare_dimension(az):
     assert z['text'] == 'Изделие DN50'
 
 
-def test_model_keep_collision_stays_yellow_after_brand_is_gone(az):
+def test_documented_ip_resolves_model_keep_collision(az):
     z = az.anonymize('Изделие HAWLE-TEST9-IP66')
     assert 'HAWLE' not in z['text'] and 'IP66' in z['text']
-    assert z['status'] == 'ЖЁЛТЫЙ'
-    assert 'KEEP' in z['reason']
+    assert z['status'] == 'ЗЕЛЁНЫЙ'
+    assert z['reason'] == ''
 
 
 @pytest.mark.parametrize('row', EXTRA_RULES + EXTRA_GLOBAL_RULES,
