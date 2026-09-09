@@ -72,9 +72,9 @@ TECH_RES = [
     re.compile(r'(?i)(?<!\w)(?:[012]\s*)?Ex[\sa-z]{0,24}?II[ABC]?\s*[TТ][1-6](?:\s*(?:Ga|Gb|Gc|Da|Db|Dc))?(?:\s*[XХU])?(?!\w)'),
     re.compile(r'(?i)(?<!\w)(?:DN|PN|SDR|RAL)\s*[-=]?\s*\d+(?:[.,]\d+)?(?!\w)'),
     re.compile(r'(?i)\b(?:сталь\s+(?:марки\s+)?|ст\.?\s*)[\d][\w.-]*'),
-    # Alloy notation is not an arbitrary alphanumeric tail: 4ТМ.02М is a
-    # meter model and 2БТ is a gland configuration, not a steel grade.
-    re.compile(r'(?<!\w)(?:\d{2}(?:[ХГНМСТЮФВБДКР]\d{0,2})+|\d[ХГНМСТЮФВБДКР](?:\d{1,2}[ХГНМСТЮФВБДКР]\d{0,2})+)(?:-?(?:Ш|ВД|ВИ))?(?!\w|\.\d)'),
+    # Retain the legacy conservative steel safeguard; exact documented
+    # non-technical catalog codes are excluded in protected_ranges below.
+    re.compile(r'(?<!\w)(?:\d{2}[ХГНМСТЮФВБДКР]\w*|\d[ХГНМСТЮФВБДКР]\w+)(?!\w)'),
     re.compile(r'(?i)(?<!\w)[+-]?\d+(?:[.,]\d+)?(?:\s*[xх×*]\s*\d+(?:[.,]\d+)?){1,3}(?:\s*мм)?'),
     re.compile(r'(?i)(?<![\w.])[+-]?\d+(?:[.,]\d+)?\s*(?:МПа|кПа|Па|бар|кВ|мВ|В|кВт|Вт|мм|см|км|м|мА|А|Гц|кг|г|мл|л|kV|mV|V|kW|W|mA|A|Hz|kg|mm|°\s*[CС]|град\.?\s*[CС])(?!\w)'),
     re.compile(r'(?i)\b(?:давление|размеры?|температура|напряжение|диаметр)\s*[:=]?\s*(?:от\s*)?[+-]?\d+(?:[.,]\d+)?(?:\s*°?\s*[CС])?(?:\s*до\s*[+-]?\d+(?:[.,]\d+)?)?\s*(?:МПа|кПа|бар|кВ|В|мм|°\s*[CС])?'),
@@ -141,8 +141,12 @@ def protected_ranges(text):
     # In a calendar date, "2025 г." means year, not a mass in grams.
     dates = [m.span() for m in re.finditer(
         rf'(?i)\b(?:\d{{1,2}}\s+{r.MONTHS}\s+\d{{4}}|\d{{1,2}}[./-]\d{{1,2}}[./-]\d{{2,4}})\s*г(?:ода)?\.?', text)]
+    # Manufacturer manual identifies this complete string as a meter code.
+    # Neither 4ТМ nor .02М inside it is a steel grade or a physical length.
+    catalog_codes = [m.span() for m in re.finditer(
+        r'(?i)(?<!\w)СЭТ-4ТМ(?:\.\d{2}[МM]?(?:\.\d{2})?)?(?!\w)', text)]
     ranges = [(m.start(), m.end()) for rx in TECH_RES for m in rx.finditer(text)
-              if not any(a <= m.start() and m.end() <= b for a, b in dates)]
+              if not any(a <= m.start() and m.end() <= b for a, b in dates + catalog_codes)]
     ranges.extend((a, b) for a, b, _ in reviewed_ranges(text))
     for phrase in r.OL_PHRASE_RE.finditer(text):
         # A complete phrase extends through its OL designation, even on new lines.

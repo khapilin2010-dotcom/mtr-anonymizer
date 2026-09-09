@@ -35,8 +35,8 @@ class FullScopeRulesTests(unittest.TestCase):
         self.assertEqual(z['text'], 'Счетчик длина 2м 220 В')
 
     def test_real_alloy_grades_survive(self):
-        for steel in ('09Г2С', '12Х18Н10Т', '10ХСНД', '17Г1С', '08Х18Н10', '30ХГСА'):
-            z = self.az.anonymize('Сталь ' + steel + ' Унипол')
+        for steel in ('09Г2С', '12Х18Н10Т', '10ХСНД', '17Г1С', '08Х18Н10', '30ХГСА', '20ГЛ', '30ХМЛ', '4К48'):
+            z = self.az.anonymize('Деталь HAWLE-TEST9-' + steel)
             self.assertIn(steel, z['text'])
 
     def test_tol_and_full_completion_phrase_survive(self):
