@@ -10,6 +10,7 @@ import re
 from common.database import load_database
 from excel import rules as r
 from excel.supplemental_rules import EXTRA_RULES, EXTRA_GLOBAL_RULES
+from excel.reviewed_technical import reviewed_ranges
 
 LEGAL = r'(?:ООО|ПАО|ОАО|ЗАО|АО|НПО|НПП|ФГУП)'
 LEGAL_RE = re.compile(rf'(?i)(?<!\w){LEGAL}(?!\w)')
@@ -137,6 +138,7 @@ def protected_ranges(text):
         rf'(?i)\b(?:\d{{1,2}}\s+{r.MONTHS}\s+\d{{4}}|\d{{1,2}}[./-]\d{{1,2}}[./-]\d{{2,4}})\s*г(?:ода)?\.?', text)]
     ranges = [(m.start(), m.end()) for rx in TECH_RES for m in rx.finditer(text)
               if not any(a <= m.start() and m.end() <= b for a, b in dates)]
+    ranges.extend((a, b) for a, b, _ in reviewed_ranges(text))
     for phrase in r.OL_PHRASE_RE.finditer(text):
         # A complete phrase extends through its OL designation, even on new lines.
         end = OL_RE.search(text, phrase.end())
@@ -332,9 +334,17 @@ class Anonymizer:
             text = text.replace(marker, value)
         residuals, _, _ = self._candidates(text, code, factory)
         failures = []
-        if residuals or RESIDUAL_RE.search(text):
+        # A documented technical KEEP can settle a collision. Unreviewed
+        # overlaps (including brands inside an OL) still require inspection.
+        reviewed_original = merge_ranges([(a, b) for a, b, _ in reviewed_ranges(original)])
+        reviewed_output = merge_ranges([(a, b) for a, b, _ in reviewed_ranges(text)])
+        residual_unknown = any(subtract(a, b, reviewed_output) for a, b, _ in residuals)
+        collision_unknown = any(
+            subtract(max(a, x), min(b, y), reviewed_original)
+            for a, b, _ in candidates for x, y in keeps if a < y and x < b)
+        if residual_unknown or RESIDUAL_RE.search(text):
             failures.append('Остался удаляемый признак; возможно пересечение с абсолютным KEEP')
-        elif any(a < y and x < b for a, b, _ in candidates for x, y in keeps):
+        elif collision_unknown:
             failures.append('Часть удаляемого обозначения сохранена как абсолютный KEEP; проверить остаток')
         if uncertain:
             failures.append('Проверить границы названия организации')

@@ -6,6 +6,7 @@ Attached model suffixes are removed subject to the engine's absolute KEEP.
 import re
 import hashlib
 import json
+from excel.reviewed_technical import REVIEWED_KEEP
 
 
 def family(manufacturer, inn, trigger, source, regex=None):
@@ -122,6 +123,95 @@ EXTRA_RULES += [
 ]
 
 
+# RC4: primary catalog review. An electrical series may be produced by several
+# factories; recognizing the series must not invent a factory attribution.
+EXTRA_GLOBAL_RULES += [
+    family('', '', 'ВА47-29',
+           'https://keaz.ru/catalog/ustroystva-na-din-reyku/modulnie-avtomaticheskie-vikluchateli/va47-29-modulnie-avtomaticheskie-vikluchateli-na-toki-do-63a-noviy',
+           r'(?<!\w)ВА47-29(?!\w)'),
+    family('', '', 'АВДТ32', 'https://keaz.ru/catalog', r'(?<!\w)АВДТ32(?!\w)'),
+    family('', '', 'ВН-32',
+           'https://keaz.ru/catalog/ustroystva-na-din-reyku/modulnie-vikluchateli-razediniteli-vikluchateli-nagruzki/vn32',
+           r'(?<!\w)ВН-32(?!\w)'),
+    family('Рубеж', '', 'ПАСН.',
+           'https://products.rubezh.ru/download/file/a84b08ec-58d1-11f0-95f1-d4f5ef944508/',
+           r'(?<!\w)ПАСН[. ]\s*\d{6}\.\d{3}(?:-\d+)?(?!\w)'),
+]
+
+RUBEZH_MODELS = (
+    ('МИ-R2', 'mi_r2_1-7076'), ('МИБ-R2', 'mib_r2_1-7539'),
+    ('МДУ-R2', 'mdu_r2_isp_220-3363'), ('МВП-R2', 'mvp_r2-3372'),
+    ('МПО-PFM-R2', 'mpo_pfm_r2-3320'), ('МСВ-R2', 'msv_r2-3315'),
+    ('МСП-R2', 'msp_r2-3314'), ('ОПОП 1-R2', 'opop_1_r2-3371'),
+    ('ОПОП 124-R2', 'opop_124_r2-3370'), ('ОПОП 124Б-R2', 'opop_124b_r2-3312'),
+    ('ОПОП 2-R2', 'opop_2_r2-3380'), ('РМ1М-R2', 'rm1m_r2-3325'),
+    ('РМ2-R2', 'rm2_r2-3376'), ('РМ4-R2', 'rm4_r2-3373'),
+    ('АМ1-R2', 'am1_r2-3361'), ('АМ4-R2', 'am4_r2-3378'),
+    ('ШУЗ-R2', 'shuz_r2-3357'), ('ШУН/В-R2', 'shun_v_r2-3355'),
+)
+EXTRA_GLOBAL_RULES += [family('Рубеж', '', token, 'https://products.rubezh.ru/products/' + path + '/',
+                              r'(?<!\w)' + re.escape(token).replace(r'\ ', r'\s+') + r'(?!\w)')
+                       for token, path in RUBEZH_MODELS]
+# AM names occur in Latin lettering in the catalog and Cyrillic in exports.
+EXTRA_GLOBAL_RULES += [family('Рубеж', '', token,
+    'https://products.rubezh.ru/download/file/a84b08ec-58d1-11f0-95f1-d4f5ef944508/',
+    r'(?<!\w)' + token + r'(?!\w)') for token in ('AM1-R2', 'AM4-R2')]
+
+EXTRA_RULES += [
+    family('ООО "ВЕЗА"', '7720040225', 'Канал-ГКК',
+           'https://www.veza.ru/produktsiya/kanalnoe-oborudovanie/dlya-kruglykh-kanalov/shumoglushiteli-dlya-kruglykh-kanalov/kanal-gkk',
+           r'(?<!\w)Канал-ГКК(?!\w)'),
+    family('ООО "ВЕЗА"', '7720040225', 'Канал-ГКП',
+           'https://www.veza.ru/produktsiya/kanalnoe-oborudovanie/dlya-pryamougolnykh-kanalov/shumoglushiteli-dlya-pryamougolnykh-kanalov/kanal-gkp',
+           r'(?<!\w)Канал-ГКП(?!\w)'),
+    family('ООО "ВЕЗА"', '7720040225', 'ВКОП',
+           'https://www.veza.ru/produktsiya/ventilyatory/protivopozharnye/osevye-protivopozharnye/vkop',
+           r'(?<!\w)ВКОП(?:0)?(?!\w)'),
+    family('ООО "ВЕЗА"', '7720040225', 'AIRMATE',
+           'https://www.veza.ru/produktsiya/vozdukhoobrabatyvayushchie-ventilyatsionnye-agregaty/kompaktnye-ventilyatsionnye-ustanovki/podvesnye-ustanovki-airmate/airmate-4000',
+           r'(?<!\w)AIRMATE-(?:800|1200|2000|4000|6000)(?!\w)'),
+    family('ООО "ВЕЗА"', '7720040225', 'РОН110',
+           'https://www.veza.ru/produktsiya/klapany-i-setevye-elementy/klapany-klapany-setevye/ustroystva-vozduhopriemnye/ron110-pryamougolnye',
+           r'(?<!\w)РОН\s*110(?!\w)'),
+    family('АО "Вэлан"', '2619000120', 'ВЭЛ',
+           'https://velan.ru/product/vzryvozashchishchennoe/kabelnye-vvody/kabelnye-vvody-vk-vel/',
+           r'(?<=ВК-Л-)ВЭЛ|(?<=ВК-Н-)ВЭЛ|(?<=ВК-С-)ВЭЛ'),
+]
+
+
+# Series names only: light source, colour temperature and dimensions survive.
+EXTRA_RULES += [family('Световые технологии', inn, token,
+                       'https://www.ltcompany.com/series/' + slug,
+                       r'(?<!\w)' + token + r'(?!\w)')
+                for inn in ('6229028102', '7715723321')
+                for token, slug in (('LYRA', 'lyra-led'), ('LHT', 'lht'),
+                                    ('CLEAN', 'clean'), ('TOTEM', 'totem'),
+                                    ('GLOBUS', 'globus-led'), ('PROTON', 'proton-led-exd'),
+                                    ('NORTH', 'north'), ('COMP', 'comp'))]
+EXTRA_GLOBAL_RULES += [family('Морозовский химический завод', '', 'АРМОКОТ F100',
+    'https://tdmhz.ru/wp-content/uploads/TI-Armokot-F100-metall.pdf',
+    r'(?<!\w)АРМОКОТ\s*®?\s*F\s*100(?!\w)')]
+
+
+EXTRA_RULES += [family('ООО "ЗАВОД ГОРЭЛТЕХ"', '7806155468', 'СГР01',
+    'https://exd.ru/produciya/osvetitelnoe-oborudovanie/vzryvozaschischennye-svetilniki/svetilniki-perenosnye-sgr01.html',
+    r'(?<!\w)СГР01(?!\w)')]
+
+EXTRA_GLOBAL_RULES += [
+    family('НТЦ Протей', '', 'ПАМР.',
+           'https://docs.sgep-it.ru/upload/uf/018/606jvbsf3k8erwbrjumgdgepzpdx4uu9/Prikaz-Minpromtorga-Rossii-ot-03.03.2025-_1023-o-prisvoenii-i-podtverzhdenii-TKO-statusa-TORP.pdf',
+           r'(?<!\w)ПАМР[. ]\s*\d{6}\.\d{3}(?:-\d+)?(?!\w)'),
+    family('НПК Эталон', '', 'ЮВМА.420520.004',
+           'https://npk-etalon.ru/upload/iblock/d61/6tuon4snnb64y6di54kwnjq4mznw45d2/izv_combo.pdf',
+           r'(?<!\w)ЮВМА[. ]\s*420520\.004(?:-\d+)?(?!\w)'),
+]
+
+# ESKD product/KD identity: organization code + classification + registration.
+# This establishes an identifying designation, not the name of its developer.
+EXTRA_GLOBAL_RULES += [family('', '', 'Код изделия / КД по ГОСТ 2.201',
+    'https://www.gostinfo.ru/Qa/Details/460',
+    r'(?<!\w)(?!ГОСТ)(?-i:[А-ЯЁ]{4})[. ]\s*\d{6}\.\d{3}(?:-\d{1,3})?(?:(?:ПС|РЭ|СБ|ТУ|ИЭ)\d{0,2})?(?!\w)')]
+
 def supplemental_digest():
-    return hashlib.sha256(json.dumps(EXTRA_RULES + EXTRA_GLOBAL_RULES,
+    return hashlib.sha256(json.dumps(EXTRA_RULES + EXTRA_GLOBAL_RULES + REVIEWED_KEEP,
                                      ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()

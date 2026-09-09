@@ -50,13 +50,14 @@ def code_candidates(value) -> list[str]:
     if not s:
         return []
     out = [s]
-    # Autodocs ids in the compiled registry are 4-6 digits; allow up to 9
-    # for forward compatibility, but never use 1-3 digit estimate fragments.
-    groups = re.findall(r"(?<!\d)(\d{4,9})(?!\d)", s)
-    groups.sort(key=len, reverse=True)
-    for g in groups:
-        if g not in out:
-            out.append(g)
+    # Only extract the resource id from recognized export forms. A digit
+    # sequence inside an estimate code, date or description is NOT an id.
+    # Equipment exports use a 6xx/6xxx group; materials use the -С marker.
+    match = re.fullmatch(r'(?:6\d{2,3})-(\d{4,9})(?:-(?:\d+|[СШC]))?', s, re.I)
+    if not match:
+        match = re.fullmatch(r'\d{1,4}-(\d{4,9})-[СC]', s, re.I)
+    if match:
+        out.append(match.group(1))
     return out
 
 def _boundary_pattern(phrase: str, mode: str) -> str:
