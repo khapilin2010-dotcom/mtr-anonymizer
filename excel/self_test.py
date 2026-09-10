@@ -70,7 +70,7 @@ def run():
         import tkinter as tk
         root=tk.Tk();root.withdraw();root.update();root.destroy()
     assert not any(n in sys.modules for n in ('mtr_core','MTR_Obezlichivatel','fitz','pymupdf'))
-    return {'result':'SELF_TEST_OK','version':'1.2 RC5','frozen':bool(getattr(sys,'frozen',False)),
+    return {'result':'SELF_TEST_OK','version':'1.2 RC6','frozen':bool(getattr(sys,'frozen',False)),
             'database':'mtr_data.json.gz','database_sha256':hashlib.sha256(database_path().read_bytes()).hexdigest(),
             'registry_count':len(az.registry),'formats':tested,'source_unchanged':True,
             'supplemental_sha256':supplemental_digest(),

@@ -168,6 +168,63 @@ REVIEWED_KEEP += [
          'Марка стали, без произвольного буквенно-цифрового хвоста', 'Исходная запись: марка стали'),
 ]
 
+
+# RC6: physical options and functional notation resolved from public manuals.
+ERIDAN_PRICE = 'https://eridan.ru/media/file/%D0%9F%D1%80%D0%B0%D0%B9%D1%81-%D0%BB%D0%B8%D1%81%D1%82-%D0%90%D0%9E-%D0%AD%D1%80%D0%B8%D0%B4%D0%B0%D0%BD_%D1%81_01.01.2026.pdf'
+RGT = 'https://xn--80afhhgxbuj7a.xn--p1ai/index.php/catalog/cat12/item/331-cat12-1'
+REVIEWED_KEEP += [
+    keep('fire_power_panel', r'(?<!\w)ПЭСПЗ(?!\w)',
+         'Панель электроснабжения систем противопожарной защиты; без товарного индекса',
+         'https://efesgroup.ru/', r'панел|щит|электроснаб|противопожар'),
+    keep('counter_flange_kit', r'(?<!\w)КОФ(?!\w)',
+         'Комплект ответных фланцев', 'https://vzrk.ru/', r'фланц|кран|затвор|задвиж|клапан'),
+    keep('nominal_voltage_label', r'(?<!\w)U(?:nom|num|ном)\s*[-=:]\s*\d+(?:[.,]\d+)?\s*[BВV](?!\w)',
+         'Подписанное значение напряжения; латинская B в исходной записи вместо В',
+         'Исходная запись: U и значение с единицей напряжения', r'электропитан|питан|шкаф|электр|систем|комплекс'),
+    keep('fan_insulation_case', r'(?<!\w)ТШК(?!\w)',
+         'Термо-шумоизолирующий кожух вентилятора',
+         'https://ventilyator.pro/files/katalog-veza-ventilyatory-radialnye_ruglpf1q.pdf', r'вентилятор|кожух'),
+    keep('wall_mount_frame', r'(?<!\w)МР[ЗП](?!\w)',
+         'Монтажная рама для стеновой заделки или присоединения к стене',
+         'https://ventilyatorov.ru/files/protizopozharniye-klapany-i-oborudovaniye-veza.pdf', r'клапан|рам[аыу]|КПУ|КЭД'),
+    keep('heat_tracer_dimensions', r'(?<!\w)[1-9]\s*[дd]\s*\d+(?:[.,]\d+)?[хx×]\d+(?:[.,]\d+)?(?!\w)',
+         'Количество теплоспутников, диаметр и толщина стенки трубы',
+         'Исходная запись: размер трубки и прямо указанное расположение теплоспутника', r'теплоспутник'),
+    keep('temperature_range_class', r'(?<!\w)[+−-]?\d+(?:[.,]\d+)?\s*(?:\.{2,3}|…)\s*[+−-]?\d+(?:[.,]\d+)?/(?:АА|AA|[АAВBCС])(?!\w)',
+         'Диапазон температуры и класс допуска чувствительного элемента',
+         'https://www.elemer.ru/upload/iblock/a4b/ueysfyz3782nz0rdeospy16pgwlucg2m/order_ts_1288_2018.pdf', r'термо|температур'),
+    keep('sensor_verification', r'(?<!\w)ГП(?!\w)',
+         'Государственная поверка средства измерений',
+         'https://www.elemer.ru/upload/iblock/a4b/ueysfyz3782nz0rdeospy16pgwlucg2m/order_ts_1288_2018.pdf', r'термо|температур|измерител'),
+    keep('rgt_technical_configuration', r'(?<!\w)[12]-\d+[хx×]\d+(?:[.,]\d+)?-\d+(?:[.,]\d+)?м-\d+-(?:ОП|0)-(?:Э|0)(?!\w)',
+         'Рядность, размер труб, длина, количество труб, наличие опор и экрана; префикс серии РГТ не входит в KEEP',
+         RGT, r'регистр'),
+    keep('sun_shield', r'(?<!\w)СЗК(?!\w)',
+         'Солнцезащитный / защитный козырёк; индекс изделия сюда не входит',
+         ERIDAN_PRICE, r'извещател|оповещател|камер|термокожух|козыр'),
+    keep('rf_connection', r'(?<!\w)(?:СВЧ|Антенна-ППМ)(?!\w)',
+         'СВЧ-кабель и указание соединяемых узлов: антенна и приёмопередающий модуль',
+         'Исходная запись: кабель между антенной и приёмопередатчиком', r'кабель\s+СВЧ'),
+    keep('application_housing', r'(?<!\w)ЖКХ(?!\w)',
+         'Область применения — жилищно-коммунальное хозяйство',
+         'Исходная запись: светильник для ЖКХ', r'светильник\w*\s+(?:светодиодн\w*\s+)?для\s+ЖКХ'),
+]
+
+
+# Values encoded in confirmed Eridan cable-entry designations. The engine
+# expands the numeric value only when its manufacturer-series prefix is deleted.
+REVIEWED_KEEP += [
+    keep('eridan_hose_diameter', r'(?<=КВМ)(?:15|20|25)(?!\w)',
+         'Условный проход металлорукава в мм; суффикс Н означает нержавеющую сталь',
+         ERIDAN_PRICE, r'кабель|ввод|извещател|оповещател|термокожух|камер'),
+    keep('eridan_armour_diameter', r'(?<=КВБ)(?:12|17)(?!\w)',
+         'Максимальный диаметр брони кабеля в мм; суффикс Н — нержавеющая сталь',
+         ERIDAN_PRICE, r'кабель|ввод|извещател|оповещател|термокожух|камер'),
+    keep('eridan_double_seal_diameter', r'(?<=КВБУ)(?:14|18|22)(?!\w)',
+         'Наружный диаметр бронированного кабеля: 10–14, 14–18 или 18–22 мм; двойное уплотнение',
+         ERIDAN_PRICE, r'кабель|ввод|извещател|оповещател|термокожух|камер'),
+]
+
 COMPILED_KEEP = [(row, re.compile(row['regex'], re.I), re.compile(row['context'], re.I) if row['context'] else None)
                  for row in REVIEWED_KEEP]
 
@@ -176,7 +233,7 @@ def reviewed_ranges(text):
     for row, pattern, context in COMPILED_KEEP:
         if context is None or context.search(text):
             for match in pattern.finditer(text):
-                if row['id'] in {'fiber_link', 'surge_device', 'spare_kit', 'diesel_unit', 'control_acronyms', 'protocols'}:
+                if row['id'] in {'fiber_link', 'surge_device', 'spare_kit', 'diesel_unit', 'control_acronyms', 'protocols', 'fire_power_panel', 'counter_flange_kit', 'sun_shield', 'fan_insulation_case', 'wall_mount_frame', 'sensor_verification'}:
                     prefix = text[max(0, match.start() - 50):match.start()]
                     if re.search(r'(?:ООО|ПАО|ОАО|ЗАО|АО)\s*[\"«]?\s*$', prefix, re.I):
                         continue

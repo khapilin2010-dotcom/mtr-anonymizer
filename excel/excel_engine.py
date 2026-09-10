@@ -123,7 +123,7 @@ def review_tokens(text):
             tokens.append(token)
     # A partially masked drive name is still a model if its vendor prefix
     # survived (for example, no matching manufacturer scope).
-    tokens.extend(m.group() for m in re.finditer(r'(?i)(?<!\w)[МM][VВBS](?:220|24)(?!\w)', text))
+    tokens.extend(m.group() for m in re.finditer(r'(?i)(?<!\w)(?:[МM][VВBS](?:220|24)|КВМ(?:15|20|25)|КВБ(?:12|17)|КВБУ(?:14|18|22))(?!\w)', text))
     return list(dict.fromkeys(tokens))
 
 
@@ -319,9 +319,23 @@ class Anonymizer:
         events = sorted([(a, b, '') for a, b in deleted] + [(a, b, original[a:b]) for a, b in keeps])
         pos = 0
         protected_values = []
-        voltage_spans = {(a, b) for a, b, row in reviewed_ranges(original)
-                         if row['id'] == 'veza_actuator_voltage'
-                         and any(x <= a - 2 and y >= a for x, y in deleted)}
+        rendered_values = {}
+        prefix_lengths = {'veza_actuator_voltage': 2, 'eridan_hose_diameter': 3,
+                          'eridan_armour_diameter': 3, 'eridan_double_seal_diameter': 4}
+        for a, b, row in reviewed_ranges(original):
+            key = row['id']
+            if key not in prefix_lengths or not any(x <= a - prefix_lengths[key] and y >= a for x, y in deleted):
+                continue
+            value = original[a:b]
+            if key == 'veza_actuator_voltage':
+                rendered_values[a, b] = value + ' В'
+            elif key == 'eridan_hose_diameter':
+                rendered_values[a, b] = 'кабельный ввод под металлорукав Ду' + value + ' мм'
+            elif key == 'eridan_armour_diameter':
+                rendered_values[a, b] = 'кабельный ввод для брони диаметром до ' + value + ' мм'
+            else:
+                lower = {'14': '10', '18': '14', '22': '18'}[value]
+                rendered_values[a, b] = 'кабельный ввод с двойным уплотнением, диаметр кабеля ' + lower + '–' + value + ' мм'
         for a, b, value in events:
             if a < pos:
                 raise AssertionError('Пересечение KEEP и DELETE')
@@ -330,7 +344,7 @@ class Anonymizer:
                 marker = '\ue000' + str(len(protected_values)) + '\ue001'
                 while marker in original:
                     marker = '\ue000' + marker
-                protected_values.append((marker, value + ' В' if (a, b) in voltage_spans else value))
+                protected_values.append((marker, rendered_values.get((a, b), value)))
                 segments.append(marker)
             else:
                 segments.append(' ')

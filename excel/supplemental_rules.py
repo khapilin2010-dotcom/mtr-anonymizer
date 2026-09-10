@@ -258,6 +258,45 @@ EXTRA_RULES += [family('НПП ЭЛЕМЕР', '5044003551', token,
                        r'(?<!\w)' + re.escape(token) + r'(?!\w)')
                 for token in ('ТС-1088', 'ТС-1288', 'ТС-1388', 'ТС-0295')]
 
+
+# RC6: remove documented series roots, retaining encoded physical values.
+EXTRA_RULES += [
+    family('ООО ПКП "ГазПремиум"', '6452951387', 'РГТ',
+           'https://xn--80afhhgxbuj7a.xn--p1ai/index.php/catalog/cat12/item/331-cat12-1',
+           r'(?<!\w)РГТ-(?=[12]-\d+[хx×]\d)'),
+    family('АО "Акционерная компания "Корвет"', '4501006138', 'МОС',
+           'https://korvet-jsc.ru/product/blochno-komplektnye-ustroystva/modulnye-obvyazki-gazovykh-skvazhin-mos/',
+           r'(?<!\w)МОС-(?=\d+/\d+(?!\w))'),
+    family('АО "Акционерная компания "Корвет"', '4501006138', 'Чертеж МОС',
+           'https://korvet-jsc.ru/product/blochno-komplektnye-ustroystva/modulnye-obvyazki-gazovykh-skvazhin-mos/',
+           r'(?<!\w)Черт[её]ж\s+МОС-\d+(?:\.М\d+)?(?!\w)'),
+    family('ЗАО СКБ "Термоприбор"', '7724123433', 'ТСПУ 011',
+           'https://termopribor.com/upload/cert/ru/type-description-011-2025_68a1ede1a68b4.pdf',
+           r'(?<!\w)ТС[ПМ]У\s*011(?:\.150\.ХТ)?(?!\w)'),
+]
+EXTRA_GLOBAL_RULES += [
+    family('', '', 'Индекс козырька ИП535',
+           'https://eridan.ru/media/file/%D0%9F%D1%80%D0%B0%D0%B9%D1%81-%D0%BB%D0%B8%D1%81%D1%82-%D0%90%D0%9E-%D0%AD%D1%80%D0%B8%D0%B4%D0%B0%D0%BD_%D1%81_01.01.2026.pdf',
+           r'(?<=СЗК )ИП535(?!\w)'),
+]
+
+
+# An explicitly labelled article number identifies a catalog item. Never infer
+# the supplier from the article. Absolute KEEP remains applied by the engine.
+EXTRA_GLOBAL_RULES += [family('', '', 'Явно подписанный артикул',
+    'Исходная запись: явная метка «арт.» или «артикул» перед кодом изделия',
+    r'(?<!\w)(?:арт\.|артикул)\s*[:№]?\s*(?:(?-i:[A-ZА-ЯЁ]{2,12})\s+)?(?=[A-Za-zА-Яа-яЁё0-9_./-]*\d)[A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9_./-]*(?:\s+\d{3}){0,3}(?!\w)')]
+
+
+EXTRA_GLOBAL_RULES += [
+    family('', '', 'КВМ (металлорукав)',
+           'https://eridan.ru/catalog/cable-entries/', r'(?<!\w)КВМ(?=(?:15|20|25)(?!\w))'),
+    family('', '', 'КВБ (бронированный кабель)',
+           'https://eridan.ru/catalog/cable-entries/', r'(?<!\w)КВБ(?=(?:12|17)(?!\w))'),
+    family('', '', 'КВБУ (двойное уплотнение)',
+           'https://eridan.ru/catalog/cable-entries/', r'(?<!\w)КВБУ(?=(?:14|18|22)(?!\w))'),
+]
+
 def supplemental_digest():
     return hashlib.sha256(json.dumps(EXTRA_RULES + EXTRA_GLOBAL_RULES + REVIEWED_KEEP,
                                      ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()

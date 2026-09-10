@@ -73,6 +73,7 @@ def process_excel(src, dst, az, progress=None):
                 report['skipped_sheets'].append(title)
                 continue
             report['sheets'] += 1
+            last_row = ws.max_row
             offset = ws.max_column
             for col, label in enumerate(HEADERS, offset + 1):
                 cell = ws.cell(header + 1, col, label)
@@ -80,7 +81,7 @@ def process_excel(src, dst, az, progress=None):
                 cell.fill = PatternFill('solid', fgColor='1767A6')
                 cell.alignment = Alignment(wrap_text=True)
                 ws.column_dimensions[cell.column_letter].width = 55 if col != offset + 3 else 36
-            for row in range(header + 2, ws.max_row + 1):
+            for row in range(header + 2, last_row + 1):
                 source = ws.cell(row, cols['name'] + 1)
                 name = text_value(source.value)
                 if not name.strip() or source.data_type == 'e':
@@ -102,8 +103,8 @@ def process_excel(src, dst, az, progress=None):
                     cell.alignment = Alignment(wrap_text=True, vertical='top')
                 ws.cell(row, offset + 3).fill = PatternFill(
                     'solid', fgColor='D9EAD3' if result['status'] == 'ЗЕЛЁНЫЙ' else 'FFF2CC')
-                if progress and (row % 100 == 0 or row == ws.max_row):
-                    progress(f'{title}: {row - header - 1} / {ws.max_row - header - 1}')
+                if progress and (row % 100 == 0 or row == last_row):
+                    progress(f'{title}: {row - header - 1} / {last_row - header - 1}')
         if not report['sheets']:
             raise ValueError('Ни на одном рабочем листе не найдены столбцы МТР.')
         wb.save(dst)
