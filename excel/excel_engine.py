@@ -4,6 +4,7 @@ Find immutable technical ranges first, subtract them from every deletion, and
 build the output once. No document-format logic belongs in this module.
 """
 from collections import defaultdict
+import hashlib
 from functools import lru_cache
 import re
 
@@ -183,6 +184,7 @@ class Anonymizer:
         self.rules_by_inn = defaultdict(list)
         self.rules_by_name = defaultdict(list)
         self.global_rules = []
+        self.rule_origins = defaultdict(list)
         self.global_manufacturers = []
         rows = list(data['rules']) + list(EXTRA_RULES if data_file is None else ())
         self.rule_count = len(rows)
@@ -205,12 +207,14 @@ class Anonymizer:
                 continue
             pattern = self._compile_rule(row)
             if pattern:
+                self.rule_origins[pattern.pattern].append({k: v for k, v in row.items() if k in ('id', 'manufacturer', 'inn', 'trigger', 'source', 'note')})
                 key = str(row.get('inn') or '') or 'name:' + r.normalize_name(row.get('manufacturer', ''))
                 self.rules_by_inn[key].append(pattern)
                 self.rules_by_name[r.normalize_name(row.get('manufacturer', ''))].append(pattern)
         for row in list(data['global_unique_rules']) + list(EXTRA_GLOBAL_RULES if data_file is None else ()):
             pattern = self._compile_rule(row)
             if pattern:
+                self.rule_origins[pattern.pattern].append({k: v for k, v in row.items() if k in ('id', 'manufacturer', 'inn', 'trigger', 'source', 'note')})
                 self.global_rules.append(pattern)
                 if row.get('manufacturer'):
                     self.global_manufacturers.append((pattern, row['manufacturer']))
@@ -330,13 +334,14 @@ class Anonymizer:
             active.extend(self.rules_by_inn.get(i, []))
         active.extend(self.rules_by_name.get(r.normalize_name(resolved), []))
         for rx in active:
-            candidates.extend((*m.span(), 'признак из базы') for m in rx.finditer(text))
+            candidates.extend((*m.span(), 'признак из базы [' + hashlib.sha256(rx.pattern.encode('utf-8')).hexdigest()[:12] + ']') for m in rx.finditer(text))
         return candidates, list(dict.fromkeys(filter(None, manufacturers))), uncertain_org
 
-    def anonymize(self, name, code='', factory=''):
+    def anonymize(self, name, code='', factory='', *, expert_keeps=(), expert_deletes=()):
         original = str(name or '')
-        keeps = protected_ranges(original)
+        keeps = merge_ranges(protected_ranges(original) + list(expert_keeps))
         candidates, manufacturers, uncertain = self._candidates(original, code, factory)
+        candidates.extend(expert_deletes)
         deleted = merge_ranges([piece for a, b, _ in candidates for piece in subtract(a, b, keeps)])
         # Keep characters never enter the removal log or a delete range.
         removed = []
@@ -393,8 +398,9 @@ class Anonymizer:
         failures = []
         # A documented technical KEEP can settle a collision. Unreviewed
         # overlaps (including brands inside an OL) still require inspection.
-        reviewed_original = merge_ranges([(a, b) for a, b, _ in reviewed_ranges(original)])
-        reviewed_output = merge_ranges([(a, b) for a, b, _ in reviewed_ranges(text)])
+        reviewed_original = merge_ranges([(a, b) for a, b, _ in reviewed_ranges(original)] + list(expert_keeps))
+        expert_output = [m.span() for a, b in expert_keeps for m in re.finditer(re.escape(original[a:b]), text)]
+        reviewed_output = merge_ranges([(a, b) for a, b, _ in reviewed_ranges(text)] + expert_output)
         residual_unknown = any(subtract(a, b, reviewed_output) for a, b, _ in residuals)
         collision_unknown = any(
             subtract(max(a, x), min(b, y), reviewed_original)
@@ -413,7 +419,7 @@ class Anonymizer:
             failures.append('Производитель не определён')
         _, identity = self.resolve_factory(code, factory)
         aero_scope = identity == AERO_INN or bool(AERO_NAME_RE.search(original))
-        accepted = aero_designation_ranges(text) if aero_scope else []
+        accepted = (aero_designation_ranges(text) if aero_scope else []) + expert_output
         unresolved = review_tokens(text, accepted)
         if unresolved:
             failures.append('Проверить обозначения: ' + ', '.join(unresolved[:12]))
@@ -426,4 +432,6 @@ class Anonymizer:
         return {'text': text, 'factory': '; '.join(manufacturers),
                 'status': 'ЖЁЛТЫЙ' if failures else 'ЗЕЛЁНЫЙ',
                 'reason': '; '.join(failures + ([AERO_POLICY['decision'] + ' Основание: решение пользователя.'] if aero_scope else [])), 'removed': removed,
-                'changed': text != original}
+                'changed': text != original,
+                'trace': [{'start': a, 'end': b, 'fragment': original[a:b], 'rule': label} for a, b, label in candidates],
+                'protected': [original[a:b] for a, b in keeps]}

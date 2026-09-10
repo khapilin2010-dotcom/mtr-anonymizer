@@ -13,6 +13,36 @@ from excel.reviewed_technical import REVIEWED_KEEP
 from excel.supplemental_rules import EXTRA_RULES, EXTRA_GLOBAL_RULES, supplemental_digest
 
 
+def expert_smoke():
+    from excel.knowledge import KnowledgeStore, restore_backup
+    from excel.expert_engine import ExpertAnonymizer
+    from excel.review_io import import_review
+    from openpyxl import Workbook, load_workbook
+    with tempfile.TemporaryDirectory(prefix='MTR_Knowledge_') as tmp:
+        root = Path(tmp); share = root / 'Общая база'; share.mkdir()
+        alice = KnowledgeStore(root / 'alice', share, 'alice')
+        bob = KnowledgeStore(root / 'bob', share, 'bob')
+        src = root / 'Проверка.xlsx'; wb = Workbook(); ws = wb.active
+        ws.append(['Код Автодокс', 'Наименование', 'Производитель'])
+        ws.append(['SYNTHETIC-EXPERT-001', 'Клапан XYZ-500 DN50', 'Тестовый завод']); wb.save(src)
+        az = ExpertAnonymizer(alice.snapshot()); out, report = process_file(src, root, az, knowledge_store=alice)
+        assert alice.sync()['online']
+        wb = load_workbook(out); ws = wb.active; ws.cell(2, 5, 'Клапан DN50'); wb.save(out); wb.close()
+        result = import_review(out, bob); assert result['accepted'] == 1 and not result['issues'], result
+        assert import_review(out, bob)['accepted'] == 0
+        alice.sync(); final = ExpertAnonymizer(alice.snapshot()).anonymize('Клапан XYZ-500 DN50', 'SYNTHETIC-EXPERT-001', 'Тестовый завод')
+        assert final['text'] == 'Клапан DN50' and final['status'] == 'ЗЕЛЁНЫЙ', final
+        row = bob.session_rows(report['session'])[0]
+        alice.decide(row, row['source']); alice.sync(); bob.sync()
+        assert ExpertAnonymizer(bob.snapshot()).anonymize(row['source'], row['code'], row['factory'])['status'] == 'КРАСНЫЙ'
+        backup = root / 'backup.zip'; bob.backup(backup); restore_backup(backup, root / 'restored')
+        assert list((share / 'backups').glob('*.zip'))
+        if sys.platform == 'win32':
+            from excel.expert_ui import gui
+            assert gui(root / 'ui-smoke', smoke=True)
+    return ['shared_events', 'excel_return', 'idempotent_import', 'expert_reuse', 'conflict', 'backup_restore', 'new_ui']
+
+
 def run():
     import xlrd
     import xlwt
@@ -73,12 +103,13 @@ def run():
             assert values[4]==f'Клапан {keep}',values[4]
             assert values[6]
             tested.append(suffix)
+    expert_checks = expert_smoke()
     if sys.platform=='win32':
         import tkinter as tk
         root=tk.Tk();root.withdraw();root.update();root.destroy()
     assert not any(n in sys.modules for n in ('mtr_core','MTR_Obezlichivatel','fitz','pymupdf'))
-    return {'result':'SELF_TEST_OK','version':'1.2 RC8','frozen':bool(getattr(sys,'frozen',False)),
-            'database':'mtr_data.json.gz','database_sha256':hashlib.sha256(database_path().read_bytes()).hexdigest(),
+    return {'result':'SELF_TEST_OK','version':'1.3 RC1','frozen':bool(getattr(sys,'frozen',False)),
+            'expert_checks':expert_checks,'database':'mtr_data.json.gz','database_sha256':hashlib.sha256(database_path().read_bytes()).hexdigest(),
             'registry_count':len(az.registry),'formats':tested,'source_unchanged':True,
             'supplemental_sha256':supplemental_digest(),
             'reviewed_keep_count':len(REVIEWED_KEEP),

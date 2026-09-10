@@ -30,7 +30,7 @@ def find_header(rows):
             for key, names in HEADER_NAMES.items():
                 if norm_header(value) in names:
                     mapping.setdefault(key, col)
-        if 'name' in mapping and ('code' in mapping or 'factory' in mapping):
+        if 'name' in mapping:
             return index, mapping
     raise ValueError('Не найдены столбцы «Наименование» и «Код Автодокс/Код ресурса» или «Производитель».')
 
@@ -42,14 +42,14 @@ def select_titles(titles):
 
 
 def new_report():
-    return dict(rows=0, changed=0, green=0, yellow=0, sheets=0, skipped_formulas=0,
+    return dict(rows=0, changed=0, green=0, yellow=0, red=0, sheets=0, skipped_formulas=0,
                 skipped_sheets=[], warnings=[])
 
 
 def record(result, report):
     report['rows'] += 1
     report['changed'] += int(result['changed'])
-    report['green' if result['status'] == 'ЗЕЛЁНЫЙ' else 'yellow'] += 1
+    report[{'ЗЕЛЁНЫЙ': 'green', 'КРАСНЫЙ': 'red'}.get(result['status'], 'yellow')] += 1
     # Include the reason in the status cell so a yellow row is actionable.
     status = result['status'] + (': ' + result['reason'] if result['reason'] else '')
     return [result['factory'], result['text'], status, '; '.join(result['removed'])]
@@ -59,7 +59,9 @@ def text_value(value):
     return '' if value is None else str(value)
 
 
-def process_excel(src, dst, az, progress=None):
+def process_excel(src, dst, az, progress=None, session=None):
+    from excel.review_io import REVIEW_HEADERS, review_values
+    headers = HEADERS + (REVIEW_HEADERS if session else ())
     from openpyxl import load_workbook
     from openpyxl.styles import PatternFill, Font, Alignment
     wb = load_workbook(src, keep_vba=src.suffix.lower() == '.xlsm')
@@ -75,12 +77,21 @@ def process_excel(src, dst, az, progress=None):
             report['sheets'] += 1
             last_row = ws.max_row
             offset = ws.max_column
-            for col, label in enumerate(HEADERS, offset + 1):
+            for col, label in enumerate(headers, offset + 1):
                 cell = ws.cell(header + 1, col, label)
                 cell.font = Font(bold=True, color='FFFFFF')
                 cell.fill = PatternFill('solid', fgColor='1767A6')
                 cell.alignment = Alignment(wrap_text=True)
                 ws.column_dimensions[cell.column_letter].width = 55 if col != offset + 3 else 36
+            if session:
+                from openpyxl.worksheet.datavalidation import DataValidation
+                validation = DataValidation(type='list', formula1='"Правильно,Исправить,Оставить как в исходном"', allow_blank=True)
+                validation.errorTitle = 'Решение инженера'; validation.error = 'Выберите отметку из списка'; validation.showErrorMessage = True
+                ws.add_data_validation(validation)
+                from openpyxl.utils import get_column_letter
+                validation.add(f'{get_column_letter(offset + 5)}{header + 2}:{get_column_letter(offset + 5)}{max(header + 2, last_row)}')
+                for col in (offset + 9, offset + 10):
+                    ws.column_dimensions[get_column_letter(col)].hidden = True
             for row in range(header + 2, last_row + 1):
                 source = ws.cell(row, cols['name'] + 1)
                 name = text_value(source.value)
@@ -97,12 +108,15 @@ def process_excel(src, dst, az, progress=None):
                 if row <= header + 6 and code in {'1', '2'} and name in {'3', '4'}:
                     continue
                 result = az.anonymize(name, code, factory)
-                for col, value in enumerate(record(result, report), offset + 1):
+                values = record(result, report)
+                if session:
+                    values += review_values(session, title, row, code, name, factory, result)
+                for col, value in enumerate(values, offset + 1):
                     cell = ws.cell(row, col, value)
                     cell.data_type = 's'  # Never turn a generated value into a formula.
                     cell.alignment = Alignment(wrap_text=True, vertical='top')
                 ws.cell(row, offset + 3).fill = PatternFill(
-                    'solid', fgColor='D9EAD3' if result['status'] == 'ЗЕЛЁНЫЙ' else 'FFF2CC')
+                    'solid', fgColor={'ЗЕЛЁНЫЙ': 'D9EAD3', 'КРАСНЫЙ': 'F4CCCC'}.get(result['status'], 'FFF2CC'))
                 if progress and (row % 100 == 0 or row == last_row):
                     progress(f'{title}: {row - header - 1} / {last_row - header - 1}')
         if not report['sheets']:
@@ -113,7 +127,9 @@ def process_excel(src, dst, az, progress=None):
     return report
 
 
-def process_csv(src, dst, az, progress=None):
+def process_csv(src, dst, az, progress=None, session=None):
+    from excel.review_io import REVIEW_HEADERS, review_values
+    headers = HEADERS + (REVIEW_HEADERS if session else ())
     raw = src.read_bytes()
     try:
         text = raw.decode('utf-8-sig')
@@ -141,7 +157,7 @@ def process_csv(src, dst, az, progress=None):
     report = new_report()
     report['sheets'] = 1
     rows[header].extend([''] * (offset - len(rows[header])))
-    rows[header].extend(HEADERS)
+    rows[header].extend(headers)
     for index in range(header + 1, len(rows)):
         row = rows[index]
         row.extend([''] * (offset - len(row)))
@@ -151,6 +167,8 @@ def process_csv(src, dst, az, progress=None):
         result = az.anonymize(name, row[cols['code']] if 'code' in cols else '',
                               row[cols['factory']] if 'factory' in cols else '')
         row.extend(record(result, report))
+        if session:
+            row.extend(review_values(session, 'CSV', index + 1, row[cols['code']] if 'code' in cols else '', name, row[cols['factory']] if 'factory' in cols else '', result))
         if progress and index % 100 == 0:
             progress(f'CSV: {index - header} / {len(rows) - header - 1}')
     with open(dst, 'w', encoding='utf-8-sig', newline='') as handle:
@@ -158,7 +176,9 @@ def process_csv(src, dst, az, progress=None):
     return report
 
 
-def process_xls(src, dst, az, progress=None):
+def process_xls(src, dst, az, progress=None, session=None):
+    from excel.review_io import REVIEW_HEADERS, review_values
+    headers = HEADERS + (REVIEW_HEADERS if session else ())
     import xlrd
     import xlwt
     from xlutils.copy import copy as copy_xls
@@ -185,13 +205,16 @@ def process_xls(src, dst, az, progress=None):
         except ValueError:
             report['skipped_sheets'].append(title)
             continue
-        if sheet.ncols + 4 > 256:
+        if sheet.ncols + len(headers) > 256:
             raise ValueError('В XLS недостаточно места для четырёх столбцов. Сохраните исходник как XLSX.')
         report['sheets'] += 1
         writable = output.get_sheet(source.sheet_names().index(title))
-        for col, label in enumerate(HEADERS, sheet.ncols):
+        for col, label in enumerate(headers, sheet.ncols):
             writable.write(header, col, label)
             writable.col(col).width = 14000
+        if session:
+            writable.col(sheet.ncols + 8).hidden = True
+            writable.col(sheet.ncols + 9).hidden = True
         for row in range(header + 1, sheet.nrows):
             if sheet.cell_type(row, cols['name']) == xlrd.XL_CELL_ERROR:
                 continue
@@ -200,7 +223,10 @@ def process_xls(src, dst, az, progress=None):
                 continue
             result = az.anonymize(name, text_value(sheet.cell_value(row, cols['code'])) if 'code' in cols else '',
                                   text_value(sheet.cell_value(row, cols['factory'])) if 'factory' in cols else '')
-            for col, value in enumerate(record(result, report), sheet.ncols):
+            values = record(result, report)
+            if session:
+                values += review_values(session, title, row + 1, text_value(sheet.cell_value(row, cols['code'])) if 'code' in cols else '', name, text_value(sheet.cell_value(row, cols['factory'])) if 'factory' in cols else '', result)
+            for col, value in enumerate(values, sheet.ncols):
                 writable.write(row, col, value)
             if progress and row % 100 == 0:
                 progress(f'{title}: {row - header} / {sheet.nrows - header - 1}')
@@ -211,7 +237,7 @@ def process_xls(src, dst, az, progress=None):
     return report
 
 
-def process_file(src, output_dir, az=None, progress=None):
+def process_file(src, output_dir, az=None, progress=None, knowledge_store=None, cancel=None):
     src, output_dir = Path(src), Path(output_dir)
     if src.suffix.lower() not in SUPPORTED:
         raise ValueError('Поддерживаются XLSX, XLSM, XLS и CSV.')
@@ -230,12 +256,27 @@ def process_file(src, output_dir, az=None, progress=None):
             index += 1
     fd, temporary = tempfile.mkstemp(prefix='.mtr-', suffix=suffix, dir=output_dir)
     os.close(fd)
+    session = None
+    def notify(message):
+        if cancel and cancel.is_set():
+            raise InterruptedError('Обработка отменена')
+        if progress:
+            progress(message)
     try:
+        if knowledge_store:
+            session = knowledge_store.new_session(src, getattr(getattr(az, 'snapshot', None), 'version', 'legacy'))
+        notify('Чтение ' + src.name)
         processor = {'.csv': process_csv, '.xls': process_xls}.get(suffix, process_excel)
-        report = processor(src, Path(temporary), az or Anonymizer(), progress)
+        report = processor(src, Path(temporary), az or Anonymizer(), notify, session)
+        notify('Сохранение ' + src.name)
+        if session:
+            session.finish()
+            report['session'] = session.id
         os.replace(temporary, dst)
         return dst, report
     except BaseException:
+        if session:
+            session.abort()
         Path(temporary).unlink(missing_ok=True)
         dst.unlink(missing_ok=True)
         raise
