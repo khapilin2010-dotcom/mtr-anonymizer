@@ -7,6 +7,7 @@ import re
 import hashlib
 import json
 from excel.reviewed_technical import REVIEWED_KEEP
+from excel.manufacturer_policy import AERO_POLICY
 
 
 def family(manufacturer, inn, trigger, source, regex=None):
@@ -230,9 +231,6 @@ EXTRA_RULES += [
     family('ООО "ВЕЗА"', '7720040225', 'MV220',
            'https://ventilyatorov.ru/files/protizopozharniye-klapany-i-oborudovaniye-veza.pdf',
            r'(?<!\w)[МM][VВBS](?=(?:220|24)(?!\w))'),
-    family('ООО "АЭРО ИКСИА"', '3257017280', 'СКВ',
-           'https://nanocertifica.ru/news/provedena-sertifikatsiya-skv-aero-iksian/',
-           r'(?<!\w)СКВ(?!\w)'),
     family('АО "Сантехпром"', '7718014490', 'РБС',
            'https://santexprom.ru/catalog/radiator-rbs-500-ch-95-a01.html',
            r'(?<!\w)РБС(?=-\d)'),
@@ -298,5 +296,5 @@ EXTRA_GLOBAL_RULES += [
 ]
 
 def supplemental_digest():
-    return hashlib.sha256(json.dumps(EXTRA_RULES + EXTRA_GLOBAL_RULES + REVIEWED_KEEP,
+    return hashlib.sha256(json.dumps(EXTRA_RULES + EXTRA_GLOBAL_RULES + REVIEWED_KEEP + [AERO_POLICY],
                                      ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()

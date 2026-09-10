@@ -11,6 +11,7 @@ from common.database import load_database
 from excel import rules as r
 from excel.supplemental_rules import EXTRA_RULES, EXTRA_GLOBAL_RULES
 from excel.reviewed_technical import reviewed_ranges
+from excel.manufacturer_policy import AERO_INN, AERO_NAME_RE, AERO_POLICY, aero_designation_ranges
 
 LEGAL = r'(?:ООО|ПАО|ОАО|ЗАО|АО|НПО|НПП|ФГУП)'
 LEGAL_RE = re.compile(rf'(?i)(?<!\w){LEGAL}(?!\w)')
@@ -109,9 +110,9 @@ TECH_WORDS = set('SFP QSFP RJ UTP STP GE GbE STM Serial Ethernet LAN WAN AC DC F
 TECH_WORDS.update('ЗРА САУ ППУ ОЦ УКРМ АВР ДЭС СОПТ ОПН ЭХЗ КТП БКТП ТНВД АБС'.casefold().split())
 
 
-def review_tokens(text):
+def review_tokens(text, accepted_ranges=()):
     masked = list(text)
-    for a, b in protected_ranges(text):
+    for a, b in merge_ranges(protected_ranges(text) + list(accepted_ranges)):
         masked[a:b] = ' ' * (b - a)
     tokens = []
     for match in REVIEW_TOKEN_RE.finditer(''.join(masked)):
@@ -199,6 +200,9 @@ class Anonymizer:
                 if not any(a == alias and i == inn for a, i, _ in self.alias_index[words[0]]):
                     self.alias_index[words[0]].append(item)
         for row in rows:
+            # User decision supersedes legacy Aero product/series deletion.
+            if str(row.get('inn') or '') == AERO_INN:
+                continue
             pattern = self._compile_rule(row)
             if pattern:
                 key = str(row.get('inn') or '') or 'name:' + r.normalize_name(row.get('manufacturer', ''))
@@ -246,6 +250,7 @@ class Anonymizer:
                             and not explicit_alias_context(text, m.start(), m.end())):
                         continue
                     found.append((m.start(), m.end(), inn))
+        found.extend((*m.span(), AERO_INN) for m in AERO_NAME_RE.finditer(text))
         return sorted(found, key=lambda x: -(x[1] - x[0]))
 
     def _candidates(self, text, code='', factory=''):
@@ -263,12 +268,12 @@ class Anonymizer:
                 role = ROLE_RE.search(text[:match.start()])
                 if role:
                     candidates.append((role.start(), match.start(), 'обозначение производителя'))
-        for a, b, _ in aliases:
+        for a, b, alias_inn in aliases:
             candidates.append((a, b, 'производитель'))
             # Extend confirmed aliases only through attached designation parts.
             # Brackets, commas and spaces terminate this expansion.
             tail = re.match(r'(?:-[A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9._/+\-]*)', text[b:])
-            if tail:
+            if tail and alias_inn != AERO_INN:
                 candidates.append((a, b + tail.end(), 'фирменное обозначение'))
         patterns = [
             ('производитель', QUOTED_ORG_RE), ('производитель', DOTTED_ORG_RE),
@@ -282,13 +287,18 @@ class Anonymizer:
         # TU № has the same code grammar as TU; preserve original offsets.
         for m in re.finditer(r'(?i)(?<!\w)ТУ\s*№\s*', text):
             tail = r.TU_CODE_RE.match('ТУ ' + text[m.end():])
-            if tail:
+            if tail and alias_inn != AERO_INN:
                 candidates.append((m.start(), m.end() + tail.end() - 3, 'ТУ'))
         for label, rx in patterns:
             for m in rx.finditer(text):
-                candidates.append((*m.span(), label))
+                start, end = m.span()
+                if rx is BARE_ORG_RE:
+                    aero = AERO_NAME_RE.search(m.group())
+                    if aero:
+                        end = start + aero.end()
+                candidates.append((start, end, label))
                 if label in ('производитель', 'бренд'):
-                    manufacturers.append(m.group().strip())
+                    manufacturers.append(text[start:end].strip())
         # Remove legal-form remnants too, but record uncertain unquoted names.
         uncertain_org = any(not any(a <= m.start() and m.end() <= b and label == 'производитель'
                                      for a, b, label in candidates)
@@ -385,7 +395,10 @@ class Anonymizer:
             failures.append('Наименование стало пустым')
         if not manufacturers:
             failures.append('Производитель не определён')
-        unresolved = review_tokens(text)
+        _, identity = self.resolve_factory(code, factory)
+        aero_scope = identity == AERO_INN or bool(AERO_NAME_RE.search(original))
+        accepted = aero_designation_ranges(text) if aero_scope else []
+        unresolved = review_tokens(text, accepted)
         if unresolved:
             failures.append('Проверить обозначения: ' + ', '.join(unresolved[:12]))
         _, identity = self.resolve_factory(code, factory)
@@ -396,5 +409,5 @@ class Anonymizer:
             text = original
         return {'text': text, 'factory': '; '.join(manufacturers),
                 'status': 'ЖЁЛТЫЙ' if failures else 'ЗЕЛЁНЫЙ',
-                'reason': '; '.join(failures), 'removed': removed,
+                'reason': '; '.join(failures + ([AERO_POLICY['decision'] + ' Основание: решение пользователя.'] if aero_scope else [])), 'removed': removed,
                 'changed': text != original}
