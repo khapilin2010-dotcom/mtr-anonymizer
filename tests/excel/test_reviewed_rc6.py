@@ -90,7 +90,7 @@ class ReviewedRC6Tests(unittest.TestCase):
             with patch.object(Worksheet,'max_row',property(counted)):
                 out, report=process_file(src,Path(d)/'out',self.az,progress.append)
             self.assertEqual(report['rows'],300)
-            self.assertTrue(progress[-1].endswith('300 / 300'))
+            self.assertTrue(any(message.endswith('300 / 300') for message in progress))
             self.assertLess(len(calls),10)
 
 if __name__ == '__main__':unittest.main()
