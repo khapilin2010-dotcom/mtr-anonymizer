@@ -145,9 +145,14 @@ def protected_ranges(text):
     # Neither 4ТМ nor .02М inside it is a steel grade or a physical length.
     catalog_codes = [m.span() for m in re.finditer(
         r'(?i)(?<!\w)СЭТ-4ТМ(?:\.\d{2}[МM]?(?:\.\d{2})?)?(?!\w)', text)]
+    # A .М2 suffix within an explicitly labelled МОС drawing is a revision
+    # index, not square metres. OL spans extending beyond it remain protected.
+    catalog_codes.extend(m.span() for m in re.finditer(
+        r'(?i)(?<!\w)Черт[её]ж\s+МОС-\d+\.М\d+(?!\w)', text))
     ranges = [(m.start(), m.end()) for rx in TECH_RES for m in rx.finditer(text)
               if not any(a <= m.start() and m.end() <= b for a, b in dates + catalog_codes)]
-    ranges.extend((a, b) for a, b, _ in reviewed_ranges(text))
+    ranges.extend((a, b) for a, b, _ in reviewed_ranges(text)
+                  if not any(x <= a and b <= y for x, y in catalog_codes))
     for phrase in r.OL_PHRASE_RE.finditer(text):
         # A complete phrase extends through its OL designation, even on new lines.
         end = OL_RE.search(text, phrase.end())

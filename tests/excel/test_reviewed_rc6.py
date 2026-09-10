@@ -58,6 +58,12 @@ class ReviewedRC6Tests(unittest.TestCase):
         self.assertIn('TEST-ОВ.ОЛ2', z['text'])
         self.assertNotIn('МОС', z['text'])
 
+    def test_drawing_revision_is_not_square_metres(self):
+        source = 'Модуль Чертеж МОС-28.М2 площадь 2м2 TEST-ОВ.ОЛ1'
+        z = self.az.anonymize(source, factory='ИНН 4501006138')
+        self.assertEqual(z['text'], 'Модуль площадь 2м2 TEST-ОВ.ОЛ1')
+        self.assertEqual(self.az.anonymize(z['text'], factory='ИНН 4501006138')['text'], z['text'])
+
     def test_gland_series_decoded_without_losing_diameter(self):
         for token, expected in [('КВМ25', 'Ду25 мм'), ('КВБ17', 'до 17 мм'),
                                 ('КВБУ14', '10–14 мм'), ('КВБУ18', '14–18 мм')]:

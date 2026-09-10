@@ -284,7 +284,7 @@ EXTRA_GLOBAL_RULES += [
 # An explicitly labelled article number identifies a catalog item. Never infer
 # the supplier from the article. Absolute KEEP remains applied by the engine.
 EXTRA_GLOBAL_RULES += [family('', '', 'Явно подписанный артикул',
-    'Исходная запись: явная метка «арт.» или «артикул» перед кодом изделия',
+    'https://rospolus.ru/doc/svet/svetovie_tech/LT_CATALOG.pdf',
     r'(?<!\w)(?:арт\.|артикул)\s*[:№]?\s*(?:(?-i:[A-ZА-ЯЁ]{2,12})\s+)?(?=[A-Za-zА-Яа-яЁё0-9_./-]*\d)[A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9_./-]*(?:\s+\d{3}){0,3}(?!\w)')]
 
 
