@@ -154,6 +154,18 @@ class ReturnTests(KnowledgeTests):
         wb.save(source); original=source.read_bytes()
         result,report=process_file(source,self.root,ExpertAnonymizer(self.a.snapshot(),self.base),knowledge_store=self.a)
         self.assertEqual(original,source.read_bytes()); self.a.sync(); return result,report
+    def test_return_xls_formula_not_treated_as_expert_text(self):
+        try:
+            import xlwt
+        except ImportError:
+            self.skipTest('xlwt is exercised by Windows CI')
+        path=self.root/'formula-return.xls'; wb=xlwt.Workbook(); ws=wb.add_sheet('МТР')
+        for col,value in enumerate(['Код','Наименование']+list(HEADERS)):
+            ws.write(0,col,value)
+        ws.write(1,0,'1'); ws.write(1,1,'Клапан DN50'); ws.write(1,3,xlwt.Formula('"changed"')); wb.save(str(path))
+        with self.assertRaisesRegex(ValueError,'XLS содержит формулы'):
+            import_review(path,self.a)
+        self.assertFalse(self.a.events())
     def test_return_untouched_is_not_confirmation(self):
         path,_=self.create(); report=import_review(path,self.a); self.assertEqual(report['untouched'],1); self.assertFalse(self.a.events())
     def test_corrected_excel_reused_on_another_machine(self):

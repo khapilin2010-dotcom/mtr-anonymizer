@@ -85,7 +85,12 @@ def gui(app_dir, smoke=False):
                     finish(); status.set(value); messagebox.showerror('Не удалось выполнить', value)
                 else:
                     result, callback = value; finish()
-                    if callback: callback(result)
+                    if callback:
+                        try:
+                            callback(result)
+                        except Exception as exc:
+                            logging.exception('UI update failed')
+                            status.set(str(exc)); messagebox.showerror('Ошибка отображения', str(exc))
         except queue.Empty:
             pass
         root.after(100, poll)

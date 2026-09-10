@@ -54,6 +54,20 @@ def read_return(path):
                 break
     elif path.suffix.lower() == '.xls':
         import xlrd
+        # A BIFF formula has only its cached value in xlrd. Do not mistake it
+        # for an engineer's literal correction (including formulas off-screen).
+        from xlrd.compdoc import CompDoc
+        import struct
+        compound = CompDoc(path.read_bytes())
+        stream = compound.get_named_stream('Workbook')
+        if stream is None:
+            stream = compound.get_named_stream('Book')
+        position = 0
+        while stream and position + 4 <= len(stream):
+            kind, length = struct.unpack_from('<HH', stream, position)
+            if kind in (0x0006, 0x0206, 0x0406):
+                raise ValueError('Проверенный XLS содержит формулы. Сохраните проверяемые значения без формул или верните XLSX.')
+            position += 4 + length
         wb = xlrd.open_workbook(path)
         try:
             for ws in wb.sheets():
