@@ -287,7 +287,7 @@ class Anonymizer:
         # TU № has the same code grammar as TU; preserve original offsets.
         for m in re.finditer(r'(?i)(?<!\w)ТУ\s*№\s*', text):
             tail = r.TU_CODE_RE.match('ТУ ' + text[m.end():])
-            if tail and alias_inn != AERO_INN:
+            if tail:
                 candidates.append((m.start(), m.end() + tail.end() - 3, 'ТУ'))
         for label, rx in patterns:
             for m in rx.finditer(text):

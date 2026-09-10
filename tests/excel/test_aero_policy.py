@@ -42,6 +42,9 @@ class AeroPolicyTests(unittest.TestCase):
         result = self.az.anonymize('Установка АЭРО ИКСИА AI-TEST123 с приводом HAWLE-TEST9 ТУ 1234-567 № TEST-123 от 01.01.2025 IP54')
         self.assertEqual(result['text'], 'Установка AI-TEST123 с приводом IP54')
 
+    def test_tu_number_without_manufacturer(self):
+        self.assertEqual(self.az.anonymize('Клапан ТУ № 1234-567 IP54')['text'], 'Клапан IP54')
+
     def test_unrelated_unknown_stays_yellow(self):
         result = self.az.anonymize('Установка АЭРО ИКСИА AI-TEST123 XYZ-987')
         self.assertEqual(result['status'], 'ЖЁЛТЫЙ')
