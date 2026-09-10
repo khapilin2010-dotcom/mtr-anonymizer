@@ -292,10 +292,26 @@ class Anonymizer:
         for label, rx in patterns:
             for m in rx.finditer(text):
                 start, end = m.span()
-                if rx is BARE_ORG_RE:
-                    aero = AERO_NAME_RE.search(m.group())
-                    if aero:
-                        end = start + aero.end()
+                if rx in (BARE_ORG_RE, QUOTED_ORG_RE, DOTTED_ORG_RE) and AERO_NAME_RE.search(m.group()):
+                    # Quotes can enclose both a manufacturer and equipment.
+                    # The Aero exception applies to every designation, not just
+                    # the known models: never delete the whole quoted span.
+                    for part in AERO_NAME_RE.finditer(m.group()):
+                        candidates.append((start + part.start(), start + part.end(), 'производитель'))
+                    for part in LEGAL_RE.finditer(m.group()):
+                        candidates.append((start + part.start(), start + part.end(), 'производитель'))
+                    opening = re.search(r'["«“]', m.group())
+                    if opening:
+                        closing_char = {'"': '"', '«': '»', '“': '”'}[opening.group()]
+                        closing = m.group().rfind(closing_char)
+                        if closing > opening.start():
+                            candidates.append((start + opening.start(), start + opening.end(), 'кавычки организации'))
+                            candidates.append((start + closing, start + closing + 1, 'кавычки организации'))
+                    role = ROLE_RE.search(text[:start])
+                    if role:
+                        candidates.append((role.start(), start, 'обозначение производителя'))
+                    manufacturers.append(self.names.get(AERO_INN, 'АЭРО ИКСИА'))
+                    continue
                 candidates.append((start, end, label))
                 if label in ('производитель', 'бренд'):
                     manufacturers.append(text[start:end].strip())

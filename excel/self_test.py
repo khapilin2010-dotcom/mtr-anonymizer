@@ -33,6 +33,10 @@ def run():
     aero = az.anonymize('Установка АЭРО ИКСИА СКВ BOX(S)-S-63 КАС-W AI-TEST123 IP54', factory='ИНН 3257017280')
     assert aero['text'] == 'Установка СКВ BOX(S)-S-63 КАС-W AI-TEST123 IP54', aero
     assert aero['status'] == 'ЗЕЛЁНЫЙ' and 'решение пользователя' in aero['reason'], aero
+    for name in ('АЭРО ИКСИА', 'АЭРО ИКСИУ'):
+        quoted = az.anonymize('Установка ООО «' + name + ' СКВ BOX(S)-S-63» IP54')
+        assert quoted['text'] == 'Установка СКВ BOX(S)-S-63 IP54', quoted
+        assert quoted['status'] == 'ЗЕЛЁНЫЙ', quoted
     tested = []
     with tempfile.TemporaryDirectory(prefix='MTR_Excel_') as tmp:
         folder = Path(tmp) / 'Русская папка с пробелами'
@@ -73,7 +77,7 @@ def run():
         import tkinter as tk
         root=tk.Tk();root.withdraw();root.update();root.destroy()
     assert not any(n in sys.modules for n in ('mtr_core','MTR_Obezlichivatel','fitz','pymupdf'))
-    return {'result':'SELF_TEST_OK','version':'1.2 RC7','frozen':bool(getattr(sys,'frozen',False)),
+    return {'result':'SELF_TEST_OK','version':'1.2 RC8','frozen':bool(getattr(sys,'frozen',False)),
             'database':'mtr_data.json.gz','database_sha256':hashlib.sha256(database_path().read_bytes()).hexdigest(),
             'registry_count':len(az.registry),'formats':tested,'source_unchanged':True,
             'supplemental_sha256':supplemental_digest(),

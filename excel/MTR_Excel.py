@@ -14,7 +14,7 @@ if __package__ in (None, ''):
 from excel.excel_engine import Anonymizer
 from excel.file_io import SUPPORTED, process_file
 
-APP_VERSION = '1.2 RC7'
+APP_VERSION = '1.2 RC8'
 APP_DIR = Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'MTR_Excel'
 
 

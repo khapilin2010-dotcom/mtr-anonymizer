@@ -2,12 +2,14 @@
 import re
 
 AERO_INN = '3257017280'
-AERO_NAME_RE = re.compile(r'(?i)(?<!\w)(?:Аэро\s+Иксиа|Aero\s+IXIA|Иксиа)(?!\w)')
+AERO_NAME_RE = re.compile(r'(?i)(?<!\w)(?:Аэро\s+Икси[ау]|Aero\s+IXIA|Иксиа)(?!\w)')
 AERO_POLICY = {
     'id': 'aero_name_only_2026_09_10',
     'inn': AERO_INN,
     'decision': 'Удалять название АЭРО ИКСИА / Aero IXIA; сохранять обозначения оборудования.',
     'basis': 'Прямое решение пользователя от 10.09.2026, не подтверждение по каталогу.',
+    'name_variants': ['АЭРО ИКСИА', 'АЭРО ИКСИУ', 'Aero IXIA', 'ИКСИА'],
+    'quoted_name_policy': 'Удалять только название, юридическую форму и внешние кавычки; сохранять остальное содержимое.',
     'keep': ['AI-… / АИ-…', 'СКВ', 'BOX(S)', 'S-…', 'КАС-W / KAS-W / KAC-W',
              'CompactVolume', 'CrisperLine', 'RunAir', 'RunCool', 'RunRow'],
 }
