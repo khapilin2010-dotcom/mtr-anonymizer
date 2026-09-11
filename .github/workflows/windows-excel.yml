@@ -1,0 +1,87 @@
+name: MTR Excel Windows
+on:
+  workflow_dispatch:
+  push:
+    branches: ['codex/mtr-excel-*']
+    paths: ['excel/**', 'common/**', 'tests/excel/**', 'mtr_data.json.gz', '.github/workflows/windows-excel.yml']
+  pull_request:
+    paths: ['excel/**', 'common/**', 'tests/excel/**', 'mtr_data.json.gz', '.github/workflows/windows-excel.yml']
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Excel-only dependencies
+        run: python -m pip install -r excel/requirements.txt pytest==8.3.5 pyinstaller==6.12.0
+      - name: Run synthetic Excel tests
+        run: python -m pytest tests/excel -q --junitxml=excel-test-results.xml
+      - name: Build independent Windows EXE
+        shell: cmd
+        run: excel\build_exe.bat
+      - name: Assemble ZIP
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release | Out-Null
+          Copy-Item dist/MTR_Excel.exe release/
+          Copy-Item excel/README.md release/README.md
+          $hash = (Get-FileHash mtr_data.json.gz -Algorithm SHA256).Hash.ToLower()
+          $hash | Set-Content release/database.sha256
+          python -c "from excel.supplemental_rules import supplemental_digest; print(supplemental_digest())" | Set-Content release/supplemental.sha256
+          "${{ github.sha }}" | Set-Content release/commit.txt
+          Compress-Archive -Path release/* -DestinationPath MTR_Excel_Windows.zip
+      - name: Upload build for isolated runtime test
+        uses: actions/upload-artifact@v4
+        with:
+          name: MTR_Excel_build
+          path: |
+            MTR_Excel_Windows.zip
+            excel-test-results.xml
+          if-no-files-found: error
+  portable-runtime:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: MTR_Excel_build
+          path: package
+      - name: Run EXE in isolation without Python on PATH
+        shell: pwsh
+        run: |
+          $target = Join-Path $env:RUNNER_TEMP 'Русская папка с пробелами'
+          Expand-Archive package/MTR_Excel_Windows.zip -DestinationPath $target
+          $env:PATH = $target
+          Remove-Item Env:PYTHONHOME -ErrorAction SilentlyContinue
+          Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
+          if (Get-Command python, python3, py -ErrorAction SilentlyContinue) { throw 'External Python is visible' }
+          $process = Start-Process -FilePath (Join-Path $target 'MTR_Excel.exe') -ArgumentList '--self-test' -WorkingDirectory $target -PassThru
+          if (!$process.WaitForExit(120000)) { $process.Kill(); throw 'EXE self-test timeout' }
+          if ($process.ExitCode -ne 0) {
+            Get-Content "$env:LOCALAPPDATA\MTR_Excel\startup_error.log" -ErrorAction SilentlyContinue
+            throw "EXE exited with code $($process.ExitCode)"
+          }
+          $marker = Join-Path $target 'SELF_TEST_OK.json'
+          $result = Get-Content $marker -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ($result.result -ne 'SELF_TEST_OK' -or !$result.frozen) { throw 'Frozen self-test failed' }
+          $expected = (Get-Content (Join-Path $target 'database.sha256') -Raw).Trim()
+          if ($result.database_sha256 -ne $expected -or $result.registry_count -lt 100000) { throw 'Database mismatch' }
+          $extra = (Get-Content (Join-Path $target 'supplemental.sha256') -Raw).Trim()
+          if ($result.supplemental_sha256 -ne $extra -or $result.supplemental_rule_count -lt 100) { throw 'Supplemental rules mismatch' }
+          if ($result.formats.Count -ne 4 -or !$result.source_unchanged) { throw 'Format checks failed' }
+          Copy-Item $marker package/SELF_TEST_OK.json
+      - name: Publish verified Windows ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: MTR_Excel_Windows
+          path: |
+            package/MTR_Excel_Windows.zip
+            package/SELF_TEST_OK.json
+            package/excel-test-results.xml
+          if-no-files-found: error
