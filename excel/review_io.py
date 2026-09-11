@@ -82,7 +82,7 @@ def read_return(path):
         raise ValueError('Верните Excel или CSV, обработанный этой программой.')
 
 
-def import_review(path, store, progress=None, cancel=None):
+def import_review(path, store, progress=None, cancel=None, preview=False, accept_conflicts=False):
     # Collect before committing: duplicate IDs are ambiguous even if just one
     # of their copies was edited. Never settle by first/last workbook order.
     staged, issues, untouched = [], [], 0
@@ -128,7 +128,7 @@ def import_review(path, store, progress=None, cancel=None):
         if progress and len(staged) % 500 == 0:
             progress('Сопоставлено строк: ' + str(len(staged)))
     duplicates = Counter(x['rid'] for x in staged if x['rid'])
-    accepted = repeated = 0
+    proposals = []
     for item in staged:
         error = item['error']
         if duplicates[item['rid']] > 1:
@@ -147,23 +147,26 @@ def import_review(path, store, progress=None, cancel=None):
             issues.append({'sheet': item['sheet'], 'row': item['number'], 'reason': 'Пустое наименование не принято'}); continue
         if action == 'правильно' and final != row['automatic']:
             action = 'исправить'
-        event = store.decide(dict(row, provenance=dict(row.get('provenance', {}), comment=item['comment'])), final, ACTIONS.get(action, 'Исправить'))
-        accepted += event is not None; repeated += event is None
+        proposals.append(dict(row=dict(row,provenance=dict(row.get('provenance',{}),comment=item['comment'])),final=final,action=ACTIONS.get(action,'Исправить')))
     if not staged and not issues:
         raise ValueError('В файле не найдены столбцы результата обезличивания.')
-    status = store.sync()
-    return {'accepted': accepted, 'repeated': repeated, 'untouched': untouched, 'issues': issues, 'sync': status}
+    from excel.review_workflow import ReviewWorkflow
+    workflow=ReviewWorkflow(store);plan=workflow.prepare(proposals);plan['issues'].extend(issues);plan['untouched']=untouched
+    for sid in sessions:store.register_output(sid,path)
+    if preview:return plan
+    report=workflow.commit(plan,accept_conflicts,cancel);report['untouched']=untouched
+    return report
 
 
 def export_knowledge(path, snapshot):
     from openpyxl import Workbook
     wb = Workbook(); ws = wb.active; ws.title = 'Знания'
-    ws.append(['Ключ', 'Вид', 'Состояние', 'Решение', 'Независимых инженеров', 'Противоречащих', 'Область', 'Пример'])
+    ws.append(['Ключ', 'Вид', 'Состояние', 'Решение', 'Независимых инженеров', 'Противоречащих', 'Область', 'Пример', 'Классификация', 'Индекс доверия', 'Применений', 'Строк с решениями', 'Первое решение', 'Последнее применение'])
     history = wb.create_sheet('История')
     history.append(['Ключ', 'ID', 'Дата', 'Автор', 'Действие', 'Значение', 'Исходное', 'Автоматическое', 'Удалено', 'Восстановлено', 'Основание'])
     for e in snapshot.entries.values():
         sample = e['sample']
-        ws.append([e['key'], e['kind'], e['status'], e['value'], e['confirmations'], e['opposition'], str(sample.get('scope', {})), sample.get('source', sample.get('example', ''))])
+        ws.append([e['key'], e['kind'], e['status'], e['value'], e['confirmations'], e['opposition'], str(sample.get('scope', {})), sample.get('source', sample.get('example', '')),str(sample.get('classification','')),e.get('score'),e.get('applications',0),e.get('affected_rows',0),e.get('first_seen',''),e.get('last_used','')])
         for h in e['history']:
             history.append([e['key'], h['id'], h['timestamp'], h['user'], h.get('action', h['kind']), h['value'], h.get('source', h.get('example', '')), h.get('automatic', ''), str(h.get('removed', [])), str(h.get('restored', [])), str(h.get('provenance', h.get('reason', '')))])
     for sheet in wb:

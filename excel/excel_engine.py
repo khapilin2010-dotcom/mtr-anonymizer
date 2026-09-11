@@ -337,10 +337,12 @@ class Anonymizer:
             candidates.extend((*m.span(), 'признак из базы [' + hashlib.sha256(rx.pattern.encode('utf-8')).hexdigest()[:12] + ']') for m in rx.finditer(text))
         return candidates, list(dict.fromkeys(filter(None, manufacturers))), uncertain_org
 
-    def anonymize(self, name, code='', factory='', *, expert_keeps=(), expert_deletes=()):
+    def anonymize(self, name, code='', factory='', *, expert_keeps=(), expert_deletes=(), disabled_rules=()):
         original = str(name or '')
         keeps = merge_ranges(protected_ranges(original) + list(expert_keeps))
         candidates, manufacturers, uncertain = self._candidates(original, code, factory)
+        if disabled_rules:
+            candidates = [(a,b,label) for a,b,label in candidates if not any("["+key.removeprefix("static:")+"]" in label for key in disabled_rules)]
         candidates.extend(expert_deletes)
         deleted = merge_ranges([piece for a, b, _ in candidates for piece in subtract(a, b, keeps)])
         # Keep characters never enter the removal log or a delete range.

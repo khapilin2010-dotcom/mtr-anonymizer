@@ -21,7 +21,8 @@ import uuid
 import zipfile
 
 SCHEMA = 1
-VERSION = '1.3 RC1'
+VERSION = '1.4 RC1'
+DEFAULT_SETTINGS = dict(rule_active_votes=2, rule_trusted_votes=3, case_trusted_votes=3, similarity_min=50, analog_limit=20)
 
 def canonical(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
@@ -107,12 +108,20 @@ class KnowledgeStore:
         self.cache.mkdir(parents=True, exist_ok=True)
         self.db_path = self.cache / 'index.sqlite3'
         with self.db() as db:
+            db.execute('PRAGMA journal_mode=WAL')
             db.executescript('''
                 CREATE TABLE IF NOT EXISTS events(id TEXT PRIMARY KEY, body TEXT NOT NULL, pending INTEGER NOT NULL);
                 CREATE INDEX IF NOT EXISTS event_owner_key ON events(json_extract(body,'$.key'),json_extract(body,'$.user'));
                 CREATE TABLE IF NOT EXISTS rows(id TEXT PRIMARY KEY, session TEXT NOT NULL, code TEXT, source TEXT, factory TEXT, body TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS row_match ON rows(code,source,factory);
                 CREATE INDEX IF NOT EXISTS row_session ON rows(session);
+                CREATE TABLE IF NOT EXISTS session_meta(id TEXT PRIMARY KEY, body TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS features(id TEXT PRIMARY KEY, session TEXT, factory TEXT, category TEXT, body TEXT);
+                CREATE INDEX IF NOT EXISTS feature_scope ON features(session,factory,category);
+                CREATE TABLE IF NOT EXISTS tokens(session TEXT, token TEXT, id TEXT, PRIMARY KEY(session,token,id));
+                CREATE INDEX IF NOT EXISTS token_lookup ON tokens(token,session,id);
+                CREATE INDEX IF NOT EXISTS token_id ON tokens(id);
+                CREATE TABLE IF NOT EXISTS catalog_ready(session TEXT PRIMARY KEY, version TEXT);
                 CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, pending INTEGER NOT NULL);
             ''')
         self.last_sync = {'online': False, 'pending': self.pending(), 'errors': [], 'message': 'Синхронизация ещё не выполнялась'}
@@ -198,6 +207,13 @@ class KnowledgeStore:
                 raise ValueError('Неверный результат решения')
             for old in event.get('supersedes', []):
                 uid(old)
+        if event['kind']=='control':
+            from excel.semantics import CLASSES
+            if event.get('settings'):validate_settings(event['settings'])
+            if event.get('classification') and event['classification'] not in CLASSES:raise ValueError('Неизвестная классификация')
+            if event.get('requested_status') not in (None,'CANDIDATE','ACTIVE','TRUSTED','DISABLED'):raise ValueError('Неизвестный статус')
+            scope=event.get('scope')
+            if scope is not None and (not scope.get('factory') or not scope.get('category') or scope.get('role') not in ('изделие','комплектующее')):raise ValueError('Неполная область применения')
         if event['kind'] == 'case':
             if event['key'] != case_key(event['code'], event['source'], event['factory']):
                 raise ValueError('Неверный ключ ресурса')
@@ -215,11 +231,13 @@ class KnowledgeStore:
         key = case_key(row.get('code', ''), row['source'], row.get('factory', ''))
         own = self.own_events(key, 'case')
         live = Snapshot.live(own)
-        if len(live) == 1 and live[0]['value'] == final:
+        if len(live) == 1 and live[0]['value'] == final and not row.get('explicit_feedback'):
             return None  # Same user + same decision, even across sessions/imports.
         removed, restored = fragments(row.get('automatic', ''), final)
         original_deleted, _ = fragments(row['source'], final)
-        return self.emit(dict(kind='case', key=key, value=final, source=row['source'], code=row.get('code', ''),
+        from excel.semantics import feedback_facts, features
+        classification = row.get('classification') or features(row['source'],row.get('factory',''))
+        return self.emit(dict(classification=classification,facts=feedback_facts(row,final,action,classification),batch_id=row.get('batch_id',''),kind='case', key=key, value=final, source=row['source'], code=row.get('code', ''),
                               factory=row.get('factory', ''), automatic=row.get('automatic', ''),
                               row_id=row['id'], session=row['session'], action=action,
                               removed=removed, restored=restored, original_deleted=original_deleted,
@@ -239,13 +257,7 @@ class KnowledgeStore:
                               supersedes=[e['id'] for e in own]))
 
     def control(self, key, disabled, reason):
-        self.check_shared()
-        if self.user not in self.config.get('admins', []):
-            raise PermissionError('Отключать знания может администратор общей базы.')
-        if not reason.strip():
-            raise ValueError('Укажите причину изменения.')
-        own = [e['id'] for e in self.events() if e['kind'] == 'control' and e['key'] == key]
-        return self.emit(dict(kind='control', key=key, value='DISABLED' if disabled else 'ENABLED', reason=reason, supersedes=own))
+        return self.administrate(key,reason,value='DISABLED' if disabled else 'ENABLED',requested_status='DISABLED' if disabled else None)
 
     def sync(self, auto_backup=True):
         errors = []
@@ -302,6 +314,28 @@ class KnowledgeStore:
         atomic_json(self.cache / 'sync_status.json', status)
         return status
 
+    def administrate(self,key,reason,**changes):
+        self.check_shared()
+        if self.user not in self.config.get('admins',[]):raise PermissionError('Требуются права администратора общей базы.')
+        if not reason.strip():raise ValueError('Укажите основание изменения.')
+        events=[e for e in self.events() if e['kind']=='control' and e['key']==key and not e.get('usage')]
+        live=Snapshot.live([e for e in events if e['user'] in self.config.get('admins',[])],cross_user=True)
+        inherited={k:live[0][k] for k in ('classification','scope','protected','requested_status','settings') if k in live[0]} if len(live)==1 else {}
+        changes=dict(inherited,**changes);previous=self.snapshot().entries.get(key,{}).get('status','')
+        return self.emit(dict(kind='control',key=key,value=changes.pop('value','ENABLED'),reason=reason,previous_status=previous,supersedes=[e['id'] for e in events],**changes))
+
+    def configure_trust(self,settings,reason):
+        settings=dict(DEFAULT_SETTINGS,**settings);validate_settings(settings)
+        return self.administrate('settings',reason,settings=settings)
+
+    def metadata(self,sid):
+        with self.db() as db:row=db.execute('SELECT body FROM session_meta WHERE id=?',(sid,)).fetchone()
+        return json.loads(row[0]) if row else {'session':sid}
+
+    def register_output(self,sid,path):
+        meta=dict(self.metadata(sid),output_file=str(Path(path).absolute()))
+        with self.db() as db:db.execute('INSERT OR REPLACE INTO session_meta VALUES(?,?)',(sid,canonical(meta)))
+
     def new_session(self, source_file, knowledge_version):
         return SessionWriter(self, source_file, knowledge_version)
 
@@ -337,6 +371,7 @@ class KnowledgeStore:
             if footer != {'footer': count, 'sha256': h.hexdigest()}:
                 raise ValueError('Неполный или повреждённый сеанс')
             db.execute('INSERT INTO sessions VALUES(?,0)', (sid,))
+            db.execute('INSERT OR REPLACE INTO session_meta VALUES(?,?)',(sid,canonical(head)))
 
     def row(self, row_id):
         with self.db() as db:
@@ -391,12 +426,18 @@ class SessionWriter:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.temp = self.path.with_suffix('.tmp')
         self.f = gzip.open(self.temp, 'wt', encoding='utf-8', newline='\n')
-        self.f.write(canonical(dict(schema=SCHEMA, store_id=store.store_id, session=self.id, file=str(source_file), knowledge=knowledge_version, version=VERSION)) + '\n')
+        self.meta=dict(schema=SCHEMA,store_id=store.store_id,session=self.id,file=str(Path(source_file).absolute()),knowledge=knowledge_version,version=VERSION,timestamp=datetime.now(timezone.utc).isoformat())
+        self.usage=defaultdict(int);self.statistics=defaultdict(int)
+        self.f.write(canonical(self.meta)+'\n')
         self.h = hashlib.sha256(); self.db = sqlite3.connect(store.db_path, timeout=30)
         self.db.execute('BEGIN'); self.closed = False
 
     def add(self, sheet, row_number, code, source, factory, result):
-        row = dict(id=str(uuid.uuid4()), session=self.id, sheet=sheet, row=row_number, code=code, source=source,
+        info=result.get('knowledge',{})
+        for key in set(info.get('rules',[])+([info['key']] if info.get('key') else [])):self.usage[key]+=1
+        self.statistics[result['status']]+=1
+        self.statistics['expert' if info.get('status','LEGACY')!='LEGACY' else 'legacy']+=1
+        row = dict(classification=result.get('classification'),source_file=self.meta['file'],id=str(uuid.uuid4()), session=self.id, sheet=sheet, row=row_number, code=code, source=source,
                    factory=factory, automatic=result['text'], status=result['status'], reason=result['reason'],
                    detected_factory=result['factory'], removed=result['removed'], provenance=dict(result.get('knowledge', {}), trace=result.get('trace', []), protected=result.get('protected', [])))
         line = canonical(row) + '\n'; self.f.write(line); self.h.update(line.encode('utf-8')); self.count += 1
@@ -406,39 +447,66 @@ class SessionWriter:
     def finish(self):
         self.f.write(canonical({'footer': self.count, 'sha256': self.h.hexdigest()}) + '\n'); self.f.close()
         os.replace(self.temp, self.path)
+        self.db.execute('INSERT INTO session_meta VALUES(?,?)',(self.id,canonical(dict(self.meta,statistics=dict(self.statistics)))))
+        if self.usage:
+            event=dict(schema=SCHEMA,store_id=self.store.store_id,id=str(uuid.uuid4()),user=self.store.user,timestamp=datetime.now(timezone.utc).isoformat(),version=VERSION,kind='control',key='usage:'+self.id,value='ENABLED',usage=dict(self.usage),supersedes=[])
+            self.store.validate(event);self.db.execute('INSERT INTO events VALUES(?,?,1)',(event['id'],canonical(event)))
         self.db.execute('INSERT INTO sessions VALUES(?,1)', (self.id,)); self.db.commit(); self.db.close(); self.closed = True
 
     def abort(self):
         if not self.closed:
             self.f.close(); self.db.rollback(); self.db.close(); self.temp.unlink(missing_ok=True); self.path.unlink(missing_ok=True); self.closed = True
 
+def validate_settings(settings):
+    if set(settings)!=set(DEFAULT_SETTINGS):raise ValueError('Неверный набор настроек')
+    if any(type(v) is not int for v in settings.values()):raise ValueError('Пороги должны быть целыми числами')
+    if not 1<=settings['rule_active_votes']<=settings['rule_trusted_votes']<=100:raise ValueError('Активный порог должен быть не выше доверенного')
+    if not 1<=settings['case_trusted_votes']<=100 or not 0<=settings['similarity_min']<=100 or not 1<=settings['analog_limit']<=100:raise ValueError('Недопустимый порог')
+
 class Snapshot:
-    def __init__(self, events, admins=()):
-        self.version = digest([sorted(e['id'] for e in events), sorted(admins)])[:16]
-        self.entries = {}; self.rules = defaultdict(list)
-        groups = defaultdict(list); controls = defaultdict(list)
+    def __init__(self,events,admins=()):
+        from excel.semantics import folded,factory_key,feedback_facts
+        self.version=digest([sorted(e['id'] for e in events),sorted(admins)])[:16]
+        self.settings=dict(DEFAULT_SETTINGS);self.entries={};self.rules=defaultdict(list);self.protected_rules=[]
+        groups=defaultdict(list);controls=defaultdict(list);usage=defaultdict(int);dates={}
         for e in events:
-            (controls if e['kind'] == 'control' else groups)[e['key']].append(e)
-        for key, history in groups.items():
-            live = self.live(history)
-            variants = defaultdict(set)
-            for e in live:
-                variants[e['value']].add(e['user'])
-            state = 'DISPUTED' if len(variants) > 1 else 'CANDIDATE'
-            value = next(iter(variants), '')
-            count = len(variants.get(value, set())) if len(variants) == 1 else 0
-            kind = history[0]['kind']
-            if len(variants) == 1:
-                state = 'TRUSTED' if count >= 3 else 'ACTIVE' if count >= (1 if kind == 'case' else 2) else 'CANDIDATE'
-            actions = self.live([e for e in controls[key] if e['user'] in admins], cross_user=True)
-            if any(e['value'] == 'DISABLED' for e in actions):
-                state = 'DISABLED'
-            entry = dict(key=key, kind=kind, status=state, value=value, confirmations=count,
-                         opposition=sum(len(v) for v in variants.values()) - count, variants={v: sorted(u) for v, u in variants.items()},
-                         history=history + controls[key], sample=history[0], live=live)
-            self.entries[key] = entry
-            if kind == 'rule':
-                self.rules[history[0]['scope']['factory']].append(entry)
+            (controls if e['kind']=='control' else groups)[e['key']].append(e)
+            for key,count in e.get('usage',{}).items():usage[key]+=int(count);dates[key]=max(dates.get(key,''),e['timestamp'])
+        def actions(key):return self.live([e for e in controls[key] if e['user'] in admins],cross_user=True)
+        config=actions('settings');self.settings_conflict=len({canonical(e.get('settings',{})) for e in config})>1
+        if config and not self.settings_conflict:self.settings.update(config[0].get('settings',{}))
+        self.static_disabled={k for k in controls if k.startswith('static:') and any(e['value']=='DISABLED' for e in actions(k))}
+        for key,history in list(groups.items()):
+            if history[0]['kind']!='case':continue
+            effective={e['id'] for e in self.live(history)}
+            for event in history:
+                facts=event.get('facts')
+                if facts is None:facts=feedback_facts(event,event['value'],event.get('action','Исправить'))
+                for fact in facts:
+                    scope=fact['scope'];derived_key='learn:'+digest([folded(fact['fragment']),factory_key(scope['factory']),folded(scope['category']),scope['role']])
+                    groups[derived_key].append(dict(event,id=event['id']+':'+digest([derived_key,fact['action']])[:12],kind='rule',key=derived_key,value=fact['action'],fragment=fact['fragment'],scope=scope,example=event['source'],classification=fact.get('classification','не определено'),eligible=fact.get('eligible',False),origin_event=event['id'],retired=event['id'] not in effective,supersedes=[]))
+        for key,history in groups.items():
+            live=[e for e in self.live(history) if not e.get('retired')];variants=defaultdict(set)
+            for e in live:variants[e['value']].add(e['user'])
+            ranked=sorted(variants,key=lambda v:(-len(variants[v]),v));value=ranked[0] if ranked else ''
+            count=len(variants.get(value,set()));opposition=sum(len(v) for v in variants.values())-count;kind=history[0]['kind']
+            threshold=self.settings['case_trusted_votes' if kind=='case' else 'rule_trusted_votes']
+            state='DISABLED' if not live else 'DISPUTED' if len(variants)>1 else 'TRUSTED' if count>=threshold else 'ACTIVE' if count>=(1 if kind=='case' else self.settings['rule_active_votes']) else 'CANDIDATE'
+            sample=dict(sorted(live or history,key=lambda e:e['id'])[0]);admin=actions(key)
+            edits={(e.get('classification'),canonical(e.get('scope')),e.get('requested_status'),e.get('protected')) for e in admin}
+            if len(edits)>1:state='DISPUTED'
+            if any(e['value']=='DISABLED' for e in admin):state='DISABLED'
+            elif len(edits)<=1:
+                for e in admin:
+                    for field in ('classification','scope','protected'):
+                        if field in e:sample[field]=e[field]
+                    if e.get('requested_status') and len(variants)==1:state=e['requested_status']
+            if kind=='rule' and (not sample['scope'].get('factory') or sample['scope'].get('category')=='не определено') and state not in ('DISABLED','DISPUTED'):state='CANDIDATE'
+            entry=dict(key=key,kind=kind,status=state,value=value,confirmations=count,opposition=opposition,score=round(min(100,100*count/max(1,threshold))*count/max(1,count+opposition)),variants={v:sorted(u) for v,u in variants.items()},history=history+controls[key],sample=sample,live=live,applications=usage[key],last_used=dates.get(key,''),first_seen=min(e['timestamp'] for e in history),affected_rows=len({e.get('row_id') for e in history if e.get('row_id')}))
+            self.entries[key]=entry
+            if kind=='rule':
+                self.rules[sample['scope']['factory']].append(entry)
+                if sample.get('protected') and value=='KEEP' and state in ('ACTIVE','TRUSTED'):self.protected_rules.append(entry)
 
     @staticmethod
     def live(events, cross_user=False):

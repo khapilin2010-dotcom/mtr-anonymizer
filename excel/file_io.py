@@ -273,6 +273,7 @@ def process_file(src, output_dir, az=None, progress=None, knowledge_store=None, 
             session.finish()
             report['session'] = session.id
         os.replace(temporary, dst)
+        if session: knowledge_store.register_output(session.id,dst)
         return dst, report
     except BaseException:
         if session:
