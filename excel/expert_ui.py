@@ -30,7 +30,7 @@ def gui(app_dir, smoke=False):
     output = tk.StringVar(value=str(Path.home() / 'Documents' / 'MTR_Excel_Результаты'))
     top = ttk.Frame(root, padding=12); top.pack(fill='x')
     ttk.Label(top, text='MTR Excel', font=('Segoe UI', 22, 'bold')).pack(side='left')
-    ttk.Label(top, text=VERSION + ' • ' + store.user).pack(side='right')
+    ttk.Label(top, text=VERSION + ' • разработал Хапилин Виктор • ' + store.user).pack(side='right')
     settings = ttk.Frame(root, padding=(12, 0)); settings.pack(fill='x')
     ttk.Label(settings, textvariable=shared).pack(anchor='w')
     ttk.Label(settings, textvariable=sync_status).pack(anchor='w')
