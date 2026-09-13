@@ -34,11 +34,10 @@ class OperatorExpertAnonymizer(_ExpertAnonymizer):
         entry = self.snapshot.entries.get(case_key(code, source, factory))
         matches = self.matching_rules(source, info)
 
-        # KEEP knowledge is safe to apply automatically: it only prevents an
+        # KEEP knowledge is safe to apply automatically: it can only prevent an
         # existing deletion.  DELETE knowledge remains advisory in this mode.
         keep_spans = [span for e, spans in matches
-                      if e['sample'].get('protected') and e['value'] == 'KEEP'
-                      and e['status'] in ('ACTIVE', 'TRUSTED')
+                      if e['value'] == 'KEEP' and e['status'] in ('ACTIVE', 'TRUSTED')
                       for span in spans]
         disabled = self.snapshot.static_disabled
         result = self.base.anonymize(source, code, factory,
