@@ -164,10 +164,18 @@ def export_knowledge(path, snapshot):
     ws.append(['Ключ', 'Вид', 'Состояние', 'Решение', 'Независимых инженеров', 'Противоречащих', 'Область', 'Пример', 'Классификация', 'Индекс доверия', 'Применений', 'Строк с решениями', 'Первое решение', 'Последнее применение'])
     history = wb.create_sheet('История')
     history.append(['Ключ', 'ID', 'Дата', 'Автор', 'Действие', 'Значение', 'Исходное', 'Автоматическое', 'Удалено', 'Восстановлено', 'Основание'])
+    seen_history = set()
     for e in snapshot.entries.values():
         sample = e['sample']
         ws.append([e['key'], e['kind'], e['status'], e['value'], e['confirmations'], e['opposition'], str(sample.get('scope', {})), sample.get('source', sample.get('example', '')),str(sample.get('classification','')),e.get('score'),e.get('applications',0),e.get('affected_rows',0),e.get('first_seen',''),e.get('last_used','')])
         for h in e['history']:
+            # Learned rules derived from a case reuse the same engineer event.
+            # Export that event once instead of duplicating it for every derived
+            # rule, while keeping genuine rule/control history intact.
+            history_id = h.get('origin_event') or h['id']
+            if history_id in seen_history:
+                continue
+            seen_history.add(history_id)
             history.append([e['key'], h['id'], h['timestamp'], h['user'], h.get('action', h['kind']), h['value'], h.get('source', h.get('example', '')), h.get('automatic', ''), str(h.get('removed', [])), str(h.get('restored', [])), str(h.get('provenance', h.get('reason', '')))])
     for sheet in wb:
         sheet.freeze_panes = 'A2'; sheet.auto_filter.ref = sheet.dimensions

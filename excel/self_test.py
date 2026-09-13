@@ -47,6 +47,7 @@ def run():
     import xlrd
     import xlwt
     from openpyxl import Workbook, load_workbook
+    from excel.knowledge import VERSION
     az = Anonymizer()
     assert len(az.registry) > 100000, 'Incomplete registry'
     assert sum(map(len, az.rules_by_inn.values())) >= 500, 'Incomplete rules'
@@ -108,7 +109,7 @@ def run():
         import tkinter as tk
         root=tk.Tk();root.withdraw();root.update();root.destroy()
     assert not any(n in sys.modules for n in ('mtr_core','MTR_Obezlichivatel','fitz','pymupdf'))
-    return {'result':'SELF_TEST_OK','version':'1.3 RC1','frozen':bool(getattr(sys,'frozen',False)),
+    return {'result':'SELF_TEST_OK','version':VERSION,'frozen':bool(getattr(sys,'frozen',False)),
             'expert_checks':expert_checks,'database':'mtr_data.json.gz','database_sha256':hashlib.sha256(database_path().read_bytes()).hexdigest(),
             'registry_count':len(az.registry),'formats':tested,'source_unchanged':True,
             'supplemental_sha256':supplemental_digest(),

@@ -65,7 +65,10 @@ def feedback_facts(row,final,action,info=None):
     _,restored=changed_tokens(automatic,final)
     facts=[('DELETE',x) for x in removed]+[('KEEP',x) for x in restored]
     if action=='Правильно':facts += [('KEEP',x) for x in review_tokens(final)]
-    facts += [(x['action'],x['fragment']) for x in row.get('explicit_feedback',[])]
+    explicit=row.get('explicit_feedback') or []
+    if isinstance(explicit,dict):explicit=[explicit]
+    if isinstance(explicit,(list,tuple)):
+        facts += [(x['action'],x['fragment']) for x in explicit if isinstance(x,dict) and x.get('action') and x.get('fragment')]
     output={}
     for direction,part in facts:
         positions=literal_spans(source,part)
