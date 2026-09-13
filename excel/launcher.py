@@ -10,6 +10,9 @@ from pathlib import Path
 from excel.simple_store import SimpleKnowledgeStore
 from excel.legacy_import import preview_legacy, commit_legacy
 from excel.knowledge_edit_io import export_editable, preview_editable, commit_editable
+from excel.mapped_import import mapping_dialog
+from excel.quality_center import open_quality_center
+from excel.quality_tools import export_manager_report
 
 
 def run(app_dir, default_knowledge, open_main):
@@ -23,8 +26,8 @@ def run(app_dir, default_knowledge, open_main):
 
     root = tk.Tk()
     root.title('MTR Excel — запуск')
-    root.geometry('780x560')
-    root.minsize(720, 520)
+    root.geometry('900x700')
+    root.minsize(820, 650)
     style = ttk.Style(root)
     style.theme_use('clam')
     style.configure('TButton', padding=8)
@@ -71,9 +74,9 @@ def run(app_dir, default_knowledge, open_main):
     ttk.Label(mode,
               text='Галочка по умолчанию снята. Без неё накопленные DELETE/исправления используются как подсказка и идут на проверку. '
                    'Если инженер включает режим сам, ранее подтверждённые решения могут применяться без повторного просмотра.',
-              wraplength=720).pack(anchor='w', pady=(4, 0))
+              wraplength=840).pack(anchor='w', pady=(4, 0))
 
-    tools = ttk.LabelFrame(root, text='Импорт и управление базой', padding=12)
+    tools = ttk.LabelFrame(root, text='Проверка, импорт и управление базой', padding=12)
     tools.pack(fill='x', padx=16, pady=8)
     tools.columnconfigure(0, weight=1)
     tools.columnconfigure(1, weight=1)
@@ -117,6 +120,14 @@ def run(app_dir, default_knowledge, open_main):
         except Exception as exc:
             messagebox.showerror('Не удалось импортировать', str(exc))
 
+    def import_any():
+        try:
+            report = mapping_dialog(root, store())
+            if report:
+                status.set(f"Импорт с сопоставлением: принято {report['accepted']}, проблем {len(report['issues'])}.")
+        except Exception as exc:
+            messagebox.showerror('Не удалось открыть мастер импорта', str(exc))
+
     def export_base():
         path = filedialog.asksaveasfilename(title='Выгрузить базу для редактирования',
                                             defaultextension='.xlsx', filetypes=[('Excel', '*.xlsx')],
@@ -149,11 +160,32 @@ def run(app_dir, default_knowledge, open_main):
         except Exception as exc:
             messagebox.showerror('Не удалось загрузить', str(exc))
 
-    ttk.Button(tools, text='Импорт старых проверенных Excel…', command=import_old).grid(row=0, column=0, sticky='ew', padx=(0, 4), pady=4)
-    ttk.Button(tools, text='Выгрузить базу для редактирования…', command=export_base).grid(row=0, column=1, sticky='ew', padx=(4, 0), pady=4)
-    ttk.Button(tools, text='Загрузить отредактированную базу…', command=import_base).grid(row=1, column=0, columnspan=2, sticky='ew', pady=4)
+    def quality():
+        try:
+            open_quality_center(root, store())
+        except Exception as exc:
+            messagebox.showerror('Не удалось открыть центр качества', str(exc))
 
-    ttk.Label(root, textvariable=status, wraplength=735).pack(fill='x', padx=18, pady=(4, 0))
+    def manager_report():
+        path = filedialog.asksaveasfilename(title='Отчёт руководителю', defaultextension='.xlsx',
+                                            filetypes=[('Excel', '*.xlsx')], initialfile='MTR_Отчёт_руководителю.xlsx')
+        if not path:
+            return
+        try:
+            export_manager_report(path, store())
+            status.set('Отчёт руководителю сохранён: ' + path)
+            messagebox.showinfo('Готово', 'Отчёт руководителю сформирован.')
+        except Exception as exc:
+            messagebox.showerror('Не удалось сформировать отчёт', str(exc))
+
+    ttk.Button(tools, text='Центр проверки и качества…', command=quality).grid(row=0, column=0, columnspan=2, sticky='ew', pady=4)
+    ttk.Button(tools, text='Импорт старых Excel (авто)…', command=import_old).grid(row=1, column=0, sticky='ew', padx=(0, 4), pady=4)
+    ttk.Button(tools, text='Импорт старых Excel с выбором колонок…', command=import_any).grid(row=1, column=1, sticky='ew', padx=(4, 0), pady=4)
+    ttk.Button(tools, text='Выгрузить базу для редактирования…', command=export_base).grid(row=2, column=0, sticky='ew', padx=(0, 4), pady=4)
+    ttk.Button(tools, text='Загрузить отредактированную базу…', command=import_base).grid(row=2, column=1, sticky='ew', padx=(4, 0), pady=4)
+    ttk.Button(tools, text='Отчёт руководителю…', command=manager_report).grid(row=3, column=0, columnspan=2, sticky='ew', pady=4)
+
+    ttk.Label(root, textvariable=status, wraplength=850).pack(fill='x', padx=18, pady=(4, 0))
 
     def launch():
         try:
