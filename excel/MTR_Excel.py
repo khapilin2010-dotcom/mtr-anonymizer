@@ -15,6 +15,11 @@ PROGRAM_DIR = (Path(sys.executable).resolve().parent if getattr(sys, 'frozen', F
 DEFAULT_KNOWLEDGE = PROGRAM_DIR / 'MTR_Knowledge'
 
 
+def _set_runtime_version():
+    import excel.knowledge as knowledge
+    knowledge.VERSION = APP_VERSION
+
+
 def self_test(marker):
     from excel.self_test import run
     report = run()
@@ -22,6 +27,7 @@ def self_test(marker):
 
 
 def _operator_store(shared=None):
+    _set_runtime_version()
     from excel.simple_store import SimpleKnowledgeStore
     folder = Path(shared) if shared else DEFAULT_KNOWLEDGE
     folder.mkdir(parents=True, exist_ok=True)
@@ -39,6 +45,7 @@ def _install_operator_policy():
     import excel.expert_engine as expert_engine
     from excel.simple_store import SimpleKnowledgeStore
     from excel.operator_engine import OperatorExpertAnonymizer
+    knowledge.VERSION = APP_VERSION
     knowledge.KnowledgeStore = SimpleKnowledgeStore
     expert_engine.ExpertAnonymizer = OperatorExpertAnonymizer
 
@@ -62,6 +69,7 @@ def main():
         self_test(args.marker)
         return
 
+    _set_runtime_version()
     os.environ['MTR_AUTO_APPLY_CONFIRMED'] = '1' if args.auto_confirmed else '0'
     store = _operator_store(args.shared)
 
@@ -105,6 +113,7 @@ def main():
 
 
 def gui():
+    _set_runtime_version()
     from excel.launcher import run as launcher
 
     def open_main(selected_folder, auto_apply):
