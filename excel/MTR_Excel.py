@@ -8,7 +8,7 @@ import sys
 if __package__ in (None, ''):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-APP_VERSION = '1.5 RC1'
+APP_VERSION = '1.6 RC1'
 APP_DIR = Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'MTR_Excel'
 PROGRAM_DIR = (Path(sys.executable).resolve().parent if getattr(sys, 'frozen', False)
                else Path(__file__).resolve().parents[1])
@@ -62,6 +62,7 @@ def main():
     parser.add_argument('--import-history', metavar='FILE', help='Импорт старой проверенной/обезличенной выборки')
     parser.add_argument('--export-knowledge', metavar='FILE', help='Выгрузить базу знаний для редактирования')
     parser.add_argument('--import-knowledge', metavar='FILE', help='Загрузить отредактированную выгрузку базы знаний')
+    parser.add_argument('--manager-report', metavar='FILE', help='Сформировать отчёт руководителю XLSX')
     parser.add_argument('files', nargs='*')
     args = parser.parse_args()
 
@@ -90,6 +91,11 @@ def main():
     if args.import_knowledge:
         from excel.knowledge_edit_io import commit_editable
         print(json.dumps(commit_editable(args.import_knowledge, store), ensure_ascii=False, default=str))
+        return
+    if args.manager_report:
+        from excel.quality_tools import export_manager_report
+        export_manager_report(args.manager_report, store)
+        print(args.manager_report)
         return
 
     if args.files:
