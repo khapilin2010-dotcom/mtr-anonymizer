@@ -21,6 +21,7 @@ def _set_runtime_version():
 
 
 def self_test(marker):
+    _set_runtime_version()
     from excel.self_test import run
     report = run()
     Path(marker).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
