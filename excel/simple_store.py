@@ -26,6 +26,15 @@ class SimpleKnowledgeStore(_KnowledgeStore):
             Path(shared_dir).mkdir(parents=True, exist_ok=True)
         super().__init__(local_dir, shared_dir, user)
 
+    def snapshot(self):
+        # In this product mode filesystem ACLs define who may edit the knowledge
+        # base.  Therefore control events from every engineer who could write an
+        # event are effective, not only from the first manifest administrator.
+        events = self.events()
+        editors = {self.user}
+        editors.update(e.get('user') for e in events if e.get('user'))
+        return Snapshot(events, sorted(editors))
+
     def administrate(self, key, reason, **changes):
         """Allow knowledge edits to every engineer with write access to the folder.
 
