@@ -1,0 +1,36 @@
+name: Build SurveyFactoryChecker
+
+on:
+  push:
+    branches:
+      - feature/survey-factory-checker
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r survey_factory_checker/requirements.txt pyinstaller
+      - name: Syntax check
+        run: python -m py_compile survey_factory_checker/SurveyFactoryChecker.py
+      - name: Build EXE
+        shell: pwsh
+        run: |
+          cd survey_factory_checker
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name SurveyFactoryChecker --collect-all fitz --collect-all pymupdf SurveyFactoryChecker.py
+          Copy-Item ..\MTR_База_обезличивания_v14_BASELINE.xlsx dist\MTR_База_обезличивания_v14_BASELINE.xlsx
+          Compress-Archive -Path dist\SurveyFactoryChecker.exe,dist\MTR_База_обезличивания_v14_BASELINE.xlsx -DestinationPath dist\SurveyFactoryChecker_Windows.zip -Force
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SurveyFactoryChecker_Windows
+          path: survey_factory_checker/dist/SurveyFactoryChecker_Windows.zip
+          if-no-files-found: error
