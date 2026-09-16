@@ -1,10 +1,10 @@
 """Operator-facing expert engine.
 
-Static anonymization rules keep working as before.  Accumulated expert knowledge
-is conservative by default: previous DELETE/case corrections are shown as a
-recommendation but are not applied automatically until the engineer explicitly
-enables the option in the launcher.  Confirmed KEEP rules may still protect text
-because keeping extra text cannot cause over-anonymization.
+Exact engineer decisions are authoritative for the same resource immediately
+after one explicit confirmation.  They are therefore applied on every future
+matching run without an extra checkbox.  The optional auto-apply flag now only
+controls broader learned DELETE rules; conservative KEEP rules may still protect
+text automatically because keeping extra text cannot cause over-anonymization.
 """
 import os
 
@@ -26,16 +26,26 @@ class OperatorExpertAnonymizer(_ExpertAnonymizer):
                                      else bool(auto_apply_confirmed))
 
     def anonymize(self, name, code='', factory=''):
-        if self.auto_apply_confirmed:
-            return super().anonymize(name, code, factory)
-
         source = str(name or '')
-        info = features(source, factory, code, self.base)
         entry = self.snapshot.entries.get(case_key(code, source, factory))
+
+        # One explicit engineer decision for this exact resource becomes ACTIVE
+        # immediately in Snapshot.  Exact decisions always outrank the static
+        # anonymizer, including «Оставить как в исходном».  The checkbox is not
+        # required for this path; otherwise an engineer could correct the same
+        # row and watch the program repeat the old mistake on the next run.
+        if entry and entry.get('kind') == 'case' and entry.get('status') in ('ACTIVE', 'TRUSTED'):
+            return super().anonymize(source, code, factory)
+
+        if self.auto_apply_confirmed:
+            return super().anonymize(source, code, factory)
+
+        info = features(source, factory, code, self.base)
         matches = self.matching_rules(source, info)
 
-        # KEEP knowledge is safe to apply automatically: it can only prevent an
-        # existing deletion.  DELETE knowledge remains advisory in this mode.
+        # General KEEP knowledge is safe to apply automatically: it can only
+        # prevent an existing deletion. General DELETE knowledge remains
+        # advisory while automatic broader rules are disabled.
         keep_spans = [span for e, spans in matches
                       if e['value'] == 'KEEP' and e['status'] in ('ACTIVE', 'TRUSTED')
                       for span in spans]
@@ -60,7 +70,7 @@ class OperatorExpertAnonymizer(_ExpertAnonymizer):
             if entry['status'] == 'DISPUTED':
                 red.append('Инженеры сохранили разные решения')
             elif entry['status'] in ('ACTIVE', 'TRUSTED'):
-                advice.append('Есть ранее подтверждённое решение; автоматическое применение выключено')
+                advice.append('Есть ранее подтверждённое решение')
 
         active_delete = []
         disputed = []
