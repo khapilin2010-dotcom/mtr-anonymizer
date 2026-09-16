@@ -43,9 +43,34 @@ def identity():
     domain = os.environ.get('USERDOMAIN', '')
     return ((domain + '\\') if domain else '') + getpass.getuser()
 
-def case_key(code, source, factory=''):
+def legacy_case_key(code, source, factory=''):
     code = code_key(code)
     return 'code:' + code if code else 'text:' + digest([normalize(source), normalize(factory)])
+
+def case_key(code, source, factory=''):
+    """Identity of an unchanged case, never just the resource catalogue code."""
+    return 'case:' + digest([code_key(code), normalize(source), normalize(factory)])
+
+def contextual_events(events):
+    """Project old code-only journals without rewriting their immutable bytes.
+
+    Supersession is subsequently evaluated inside each context. An old decision
+    for a different source therefore cannot retire this source's history.
+    Legacy disable controls apply to every case formerly grouped by that key.
+    """
+    aliases = defaultdict(set)
+    for event in events:
+        if event['kind'] == 'case':
+            aliases[event['key']].add(case_key(event.get('code', ''), event['source'], event.get('factory', '')))
+    projected = []
+    for event in events:
+        if event['kind'] == 'case':
+            projected.append(dict(event, key=case_key(event.get('code', ''), event['source'], event.get('factory', ''))))
+        elif event['kind'] == 'control' and event['key'] in aliases:
+            projected.extend(dict(event, key=key) for key in aliases[event['key']])
+        else:
+            projected.append(event)
+    return projected
 
 def fragments(before, after):
     removed, restored = [], []
@@ -208,6 +233,8 @@ class KnowledgeStore:
             for old in event.get('supersedes', []):
                 uid(old)
         if event['kind']=='control':
+            if event.get('decision_override') not in (None, 'KEEP', 'DELETE'):
+                raise ValueError('Неверное исправление общего правила')
             from excel.semantics import CLASSES
             if event.get('settings'):validate_settings(event['settings'])
             if event.get('classification') and event['classification'] not in CLASSES:raise ValueError('Неизвестная классификация')
@@ -215,7 +242,8 @@ class KnowledgeStore:
             scope=event.get('scope')
             if scope is not None and (not scope.get('factory') or not scope.get('category') or scope.get('role') not in ('изделие','комплектующее')):raise ValueError('Неполная область применения')
         if event['kind'] == 'case':
-            if event['key'] != case_key(event['code'], event['source'], event['factory']):
+            if event['key'] not in (case_key(event['code'], event['source'], event['factory']),
+                                    legacy_case_key(event['code'], event['source'], event['factory'])):
                 raise ValueError('Неверный ключ ресурса')
         elif event['kind'] == 'rule':
             scope = event['scope']
@@ -229,9 +257,11 @@ class KnowledgeStore:
     def decide(self, row, final, action='Исправить'):
         final = str(final)
         key = case_key(row.get('code', ''), row['source'], row.get('factory', ''))
-        own = self.own_events(key, 'case')
-        live = Snapshot.live(own)
-        if len(live) == 1 and live[0]['value'] == final and not row.get('explicit_feedback'):
+        own = [e for e in contextual_events(self.events())
+               if e['kind'] == 'case' and e['key'] == key
+               and (e['user'] == self.user or getattr(self, 'replace_observed_cases', False))]
+        live = Snapshot.live(own, cross_user=getattr(self, 'replace_observed_cases', False))
+        if live and all(e['value'] == final for e in live) and any(e['user'] == self.user for e in live) and not row.get('explicit_feedback'):
             return None  # Same user + same decision, even across sessions/imports.
         removed, restored = fragments(row.get('automatic', ''), final)
         original_deleted, _ = fragments(row['source'], final)
@@ -241,7 +271,7 @@ class KnowledgeStore:
                               factory=row.get('factory', ''), automatic=row.get('automatic', ''),
                               row_id=row['id'], session=row['session'], action=action,
                               removed=removed, restored=restored, original_deleted=original_deleted,
-                              provenance=row.get('provenance', {}), supersedes=[e['id'] for e in own]))
+                              provenance=row.get('provenance', {}), supersedes=[e['id'] for e in own if e['user'] == self.user or e['value'] != final]))
 
     def propose_rule(self, row, fragment, action, category, role='изделие'):
         scope = {'factory': normalize(row.get('factory', '')), 'category': normalize(category), 'role': role}
@@ -466,6 +496,7 @@ def validate_settings(settings):
 class Snapshot:
     def __init__(self,events,admins=()):
         from excel.semantics import folded,factory_key,feedback_facts
+        events = contextual_events(events)
         self.version=digest([sorted(e['id'] for e in events),sorted(admins)])[:16]
         self.settings=dict(DEFAULT_SETTINGS);self.entries={};self.rules=defaultdict(list);self.protected_rules=[]
         groups=defaultdict(list);controls=defaultdict(list);usage=defaultdict(int);dates={}
@@ -479,6 +510,8 @@ class Snapshot:
         for key,history in list(groups.items()):
             if history[0]['kind']!='case':continue
             effective={e['id'] for e in self.live(history)}
+            if any(e['value'] == 'DISABLED' for e in actions(key)):
+                effective = set()
             for event in history:
                 facts=event.get('facts')
                 if facts is None:facts=feedback_facts(event,event['value'],event.get('action','Исправить'))
@@ -493,7 +526,7 @@ class Snapshot:
             threshold=self.settings['case_trusted_votes' if kind=='case' else 'rule_trusted_votes']
             state='DISABLED' if not live else 'DISPUTED' if len(variants)>1 else 'TRUSTED' if count>=threshold else 'ACTIVE' if count>=(1 if kind=='case' else self.settings['rule_active_votes']) else 'CANDIDATE'
             sample=dict(sorted(live or history,key=lambda e:e['id'])[0]);admin=actions(key)
-            edits={(e.get('classification'),canonical(e.get('scope')),e.get('requested_status'),e.get('protected')) for e in admin}
+            edits={(e.get('classification'),canonical(e.get('scope')),e.get('requested_status'),e.get('protected'),e.get('decision_override')) for e in admin}
             if len(edits)>1:state='DISPUTED'
             if any(e['value']=='DISABLED' for e in admin):state='DISABLED'
             elif len(edits)<=1:
@@ -501,12 +534,21 @@ class Snapshot:
                     for field in ('classification','scope','protected'):
                         if field in e:sample[field]=e[field]
                     if e.get('requested_status') and len(variants)==1:state=e['requested_status']
+                    if kind == 'rule' and e.get('decision_override'):
+                        value = e['decision_override']
+                        state = e.get('requested_status') or 'ACTIVE'
             if kind=='rule' and (not sample['scope'].get('factory') or sample['scope'].get('category')=='не определено') and state not in ('DISABLED','DISPUTED'):state='CANDIDATE'
             entry=dict(key=key,kind=kind,status=state,value=value,confirmations=count,opposition=opposition,score=round(min(100,100*count/max(1,threshold))*count/max(1,count+opposition)),variants={v:sorted(u) for v,u in variants.items()},history=history+controls[key],sample=sample,live=live,applications=usage[key],last_used=dates.get(key,''),first_seen=min(e['timestamp'] for e in history),affected_rows=len({e.get('row_id') for e in history if e.get('row_id')}))
             self.entries[key]=entry
             if kind=='rule':
                 self.rules[sample['scope']['factory']].append(entry)
                 if sample.get('protected') and value=='KEEP' and state in ('ACTIVE','TRUSTED'):self.protected_rules.append(entry)
+        self.cases_by_code = defaultdict(list)
+        for entry in self.entries.values():
+            if entry['kind'] == 'case':
+                code = code_key(entry['sample'].get('code', ''))
+                if code:
+                    self.cases_by_code[code].append(entry)
 
     @staticmethod
     def live(events, cross_user=False):

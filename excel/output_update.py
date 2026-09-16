@@ -60,9 +60,34 @@ def _xlsx(path, decisions):
             for required in (HEADERS[1], HEADERS[2], HEADERS[3]):
                 if required not in mapping:
                     raise ValueError(f'На листе «{sheet_name}» нет столбца «{required}».')
+            row_ids = {}
+            if 'MTR_ROW_ID' in mapping:
+                for cells in ws.iter_rows(min_row=header_row + 1):
+                    identity = str(cells[mapping['MTR_ROW_ID']].value or '')
+                    if identity:
+                        if identity in row_ids:
+                            raise ValueError('В итоговом Excel повторяется идентификатор строки.')
+                        row_ids[identity] = cells[0].row
             for item in items:
                 row = item['row']
                 excel_row = int(row['row'])
+                if row.get('id'):
+                    if row['id'] not in row_ids:
+                        raise ValueError('Строка решения не найдена в итоговом Excel. Обработайте исходник заново.')
+                    excel_row = row_ids[row['id']]
+                    session_col = mapping.get('MTR_SESSION_ID')
+                    if session_col is None or str(ws.cell(excel_row, session_col + 1).value) != row['session']:
+                        raise ValueError('Итоговый Excel относится к другому сеансу.')
+                    from excel.file_io import find_header, text_value
+                    from excel.knowledge import normalize, code_key
+                    _, source_cols = find_header(ws.iter_rows(min_row=header_row, max_row=header_row, values_only=True))
+                    for field in ('name', 'code', 'factory'):
+                        if field in source_cols:
+                            value = text_value(ws.cell(excel_row, source_cols[field] + 1).value)
+                            expected = row.get('source' if field == 'name' else field, '')
+                            transform = code_key if field == 'code' else normalize
+                            if transform(value) != transform(expected):
+                                raise ValueError('В итоговом Excel изменены исходные данные строки. Обработайте исходник заново.')
                 final = str(item['final'])
                 action = str(item['action'])
                 ws.cell(excel_row, mapping[HEADERS[1]] + 1, final).data_type = 's'
@@ -172,6 +197,11 @@ def apply_decisions(path, decisions):
     path = Path(path)
     if not decisions:
         return path
+    for item in decisions:
+        original = item['row'].get('source_file')
+        if original and (path.resolve() == Path(original).resolve()
+                         or (path.exists() and Path(original).exists() and os.path.samefile(path, original))):
+            raise ValueError('Исходный файл изменять нельзя. Выберите итоговый Excel.')
     suffix = path.suffix.lower()
     if suffix in ('.xlsx', '.xlsm'):
         _xlsx(path, decisions)

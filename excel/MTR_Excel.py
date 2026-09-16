@@ -8,7 +8,7 @@ import sys
 if __package__ in (None, ''):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-APP_VERSION = '1.8 RC1'
+APP_VERSION = '1.8 RC2'
 APP_DIR = Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'MTR_Excel'
 PROGRAM_DIR = (Path(sys.executable).resolve().parent if getattr(sys, 'frozen', False)
                else Path(__file__).resolve().parents[1])
@@ -70,6 +70,10 @@ def main():
 
     _set_runtime_version()
     os.environ['MTR_AUTO_APPLY_CONFIRMED'] = '1' if args.auto_confirmed else '0'
+    if not (args.files or args.import_review or args.import_history or args.export_knowledge
+            or args.import_knowledge or args.manager_report):
+        gui()
+        return
     store = _operator_store(args.shared)
 
     if args.import_review:

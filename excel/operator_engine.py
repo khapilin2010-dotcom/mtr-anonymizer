@@ -8,7 +8,7 @@ rules stay conservative unless automatic application is enabled.
 import os
 
 from excel.expert_engine import ExpertAnonymizer as _ExpertAnonymizer, protection_losses
-from excel.knowledge import case_key, fragments, normalize
+from excel.knowledge import case_key, code_key, fragments, normalize
 from excel.semantics import features
 
 
@@ -21,10 +21,8 @@ def auto_apply_enabled():
 def _same_exact_context(entry, source, factory):
     """A code match alone is not enough for an exact engineer decision.
 
-    ``case_key`` intentionally uses the Autodocs code when it exists.  That is
-    useful for grouping history, but it means a changed source string may still
-    resolve to the same entry.  We only call a decision *exact* when the source
-    and factory from the saved event still match the current row.
+    The composite key already includes these fields. This additional check
+    rejects malformed or legacy entries whose sample contradicts their key.
     """
     sample = entry.get('sample', {}) if entry else {}
     saved_source = sample.get('source', '')
@@ -96,8 +94,8 @@ class OperatorExpertAnonymizer(_ExpertAnonymizer):
         # A code may point to a historical case whose source has since changed.
         # Never treat that stale full-row decision as exact.  In that situation
         # continue with the conservative operator path and show it for review.
-        stale_case = bool(entry and entry.get('kind') == 'case'
-                          and not _same_exact_context(entry, source, factory))
+        stale_case = bool(not entry and code_key(code)
+                          and self.snapshot.cases_by_code.get(code_key(code)))
         if self.auto_apply_confirmed and not stale_case:
             return super().anonymize(source, code, factory)
 
@@ -122,6 +120,10 @@ class OperatorExpertAnonymizer(_ExpertAnonymizer):
 
         red = []
         advice = []
+        if stale_case:
+            advice.append('Для этого кода изменилось наименование или завод; требуется новая проверка')
+        if entry and entry['status'] == 'DISABLED':
+            advice.append('Точное решение отключено; требуется новая проверка')
         if entry and entry['status'] != 'DISABLED':
             self.describe(result, entry,
                           'Код Автодокс' if str(code).strip()

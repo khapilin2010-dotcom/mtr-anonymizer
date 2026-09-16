@@ -19,9 +19,10 @@ from excel.knowledge_edit_io import export_editable, preview_editable, commit_ed
 from excel.operator_engine import OperatorExpertAnonymizer
 from excel.output_update import apply_decisions
 from excel.simple_store import SimpleKnowledgeStore
+from excel.simple_review import build_review_queue
 
 
-def run(app_dir, default_knowledge, version=''):
+def run(app_dir, default_knowledge, version='', smoke=False):
     import tkinter as tk
     from tkinter import ttk, filedialog, messagebox
 
@@ -37,7 +38,7 @@ def run(app_dir, default_knowledge, version=''):
     if config_path.exists():
         try:
             candidate = Path(json.loads(config_path.read_text('utf-8')).get('folder', ''))
-            if candidate.exists():
+            if str(candidate) != '.':
                 configured = candidate
         except Exception:
             pass
@@ -52,7 +53,7 @@ def run(app_dir, default_knowledge, version=''):
     style.configure('Primary.TButton', padding=(16, 12), font=('Segoe UI', 11, 'bold'))
 
     state = {
-        'store': SimpleKnowledgeStore(app_dir, configured),
+        'store': SimpleKnowledgeStore(app_dir) if config_path.exists() else SimpleKnowledgeStore(app_dir, configured),
         'files': [], 'outputs': [], 'queue': [], 'index': 0,
         'decisions': {}, 'busy': False, 'current': None,
     }
@@ -119,6 +120,9 @@ def run(app_dir, default_knowledge, version=''):
         root.after(100, poll)
 
     def choose_knowledge():
+        if state['busy'] or any(state['decisions'].values()):
+            messagebox.showinfo('База решений', 'Сначала завершите текущую проверку.', parent=root)
+            return
         folder = filedialog.askdirectory(title='Папка базы решений', initialdir=knowledge_label.get())
         if not folder:
             return
@@ -237,27 +241,14 @@ def run(app_dir, default_knowledge, version=''):
     ttk.Button(kb_buttons, text='Открыть папку базы', command=open_knowledge_folder).pack(side='left')
 
     def build_queue(session_ids):
-        """Only skip a row when this run actually applied an exact decision.
-
-        v1.7 skipped by the mere presence of a case entry.  Because Autodocs
-        codes are grouping keys, that could hide a row even when the saved full
-        result was not actually applied.  The processing session now records
-        ``exact_applied`` and that is the only knowledge-based skip condition.
-        """
-        store = state['store']
-        store.sync(auto_backup=False)
-        rows = []
-        for sid in session_ids:
-            for row in store.session_rows(sid, '', 0, 1000000):
-                provenance = row.get('provenance') or {}
-                if provenance.get('exact_applied') is True:
-                    continue
-                changed = normalize(row.get('source', '')) != normalize(row.get('automatic', ''))
-                if changed or row.get('status') != 'ЗЕЛЁНЫЙ':
-                    rows.append(row)
-        return rows
+        return build_review_queue(state['store'], session_ids, base)
 
     def process_all():
+        if state['busy']:
+            return
+        if any(state['decisions'].values()):
+            flush_outputs(False, lambda _: process_all())
+            return
         if not state['files']:
             messagebox.showinfo('Нет файлов', 'Добавьте хотя бы один Excel-файл.', parent=root)
             return
@@ -274,9 +265,9 @@ def run(app_dir, default_knowledge, version=''):
             outputs, sessions, errors = [], [], []
             for path in targets:
                 try:
-                    # Exact saved decisions are always applied; broader learned
-                    # DELETE rules remain conservative in the normal field mode.
-                    az = OperatorExpertAnonymizer(store.snapshot(), auto_apply_confirmed=False)
+                    # Exact decisions take precedence, then confirmed scoped rules.
+                    # Unconfirmed and disputed rules still require review.
+                    az = OperatorExpertAnonymizer(store.snapshot(), auto_apply_confirmed=True)
                     dst, report = process_file(path, destination, az, knowledge_store=store, cancel=cancel)
                     outputs.append(str(dst))
                     if report.get('session'):
@@ -303,7 +294,7 @@ def run(app_dir, default_knowledge, version=''):
                 render_current()
             else:
                 status.set('Готово. Строк, требующих проверки, нет.')
-                done_text.set('Все точные решения базы применены. Итоговый файл готов.')
+                done_text.set('Итоговый файл готов. Строк, требующих проверки, нет.')
                 show(done_frame)
 
         status.set('Обезличиваю файл…')
@@ -313,6 +304,8 @@ def run(app_dir, default_knowledge, version=''):
                command=process_all).pack(fill='x', pady=(12, 4))
 
     def latest_session():
+        if state['busy']:
+            return
         store = state['store']
         with store.db() as db:
             hit = db.execute('SELECT session FROM rows GROUP BY session ORDER BY max(rowid) DESC LIMIT 1').fetchone()
@@ -320,7 +313,11 @@ def run(app_dir, default_knowledge, version=''):
             messagebox.showinfo('Проверка', 'Предыдущих обработок пока нет.', parent=root)
             return
         sid = hit[0]
-        queue_rows = build_queue([sid])
+        try:
+            queue_rows = build_queue([sid])
+        except Exception as exc:
+            messagebox.showerror('Не удалось восстановить проверку', str(exc), parent=root)
+            return
         state['queue'] = queue_rows
         state['index'] = 0
         state['decisions'] = {}
@@ -402,11 +399,16 @@ def run(app_dir, default_knowledge, version=''):
         return final
 
     def save_decision(action, final):
+        if state['busy'] or not state['current']:
+            return
         row = state['current']
         try:
             final = validate(row, final)
             event = state['store'].decide(row, final, action)
-            state['store'].sync(auto_backup=False)
+            sync = state['store'].sync(auto_backup=False)
+            if not sync['online'] or sync.get('pending') or sync.get('errors'):
+                messagebox.showwarning('Общая база недоступна', 'Решение сохранено на этом компьютере. После восстановления связи оно будет отправлено в общую базу.', parent=root)
+            row['final'] = final
             state['decisions'].setdefault(row['session'], []).append(
                 {'row': row, 'final': final, 'action': action})
             status.set('Решение сохранено в базе и будет приоритетным для этой же строки.'
@@ -423,6 +425,8 @@ def run(app_dir, default_knowledge, version=''):
     btn_original.configure(command=lambda: save_decision('Оставить как в исходном', state['current']['source']))
 
     def next_row():
+        if state['busy']:
+            return
         state['index'] += 1
         render_current()
 
@@ -451,8 +455,8 @@ def run(app_dir, default_knowledge, version=''):
             return updated
 
         def done(paths):
-            for sid in decisions:
-                state['decisions'][sid] = []
+            for sid, saved in decisions.items():
+                state['decisions'][sid] = [item for item in state['decisions'][sid] if item not in saved]
             if show_message:
                 messagebox.showinfo('Готово', 'Исправления записаны в итоговый Excel.', parent=root)
             if callback:
@@ -467,8 +471,13 @@ def run(app_dir, default_knowledge, version=''):
                 state['store'].sync(auto_backup=False)
             except Exception:
                 pass
-            done_text.set('Проверка завершена. Решения сохранены в базе, итоговый Excel обновлён.')
-            status.set('Готово. Итоговый Excel можно использовать.')
+            remaining = sum('final' not in row for row in state['queue'])
+            if remaining:
+                done_text.set(f'Итоговый Excel сохранён. Осталось проверить пропущенных строк: {remaining}. Нажмите «Продолжить проверку».')
+                status.set('Проверка ещё не завершена.')
+            else:
+                done_text.set('Проверка завершена. Решения сохранены в базе, итоговый Excel обновлён.')
+                status.set('Готово. Итоговый Excel можно использовать.')
             show(done_frame)
 
         flush_outputs(False, after)
@@ -496,10 +505,14 @@ def run(app_dir, default_knowledge, version=''):
         status.set('Добавьте следующий Excel-файл.')
         show(process_frame)
 
+    ttk.Button(done_frame, text='Продолжить проверку', command=latest_session).pack(fill='x', pady=4)
     ttk.Button(done_frame, text='Обработать ещё один файл', command=new_run).pack(fill='x', pady=4)
     ttk.Button(done_frame, text='Выгрузить базу решений в Excel…', command=export_base).pack(fill='x', pady=4)
 
     def on_close():
+        if state['busy']:
+            messagebox.showinfo('Операция выполняется', 'Дождитесь окончания записи или обработки.', parent=root)
+            return
         if any(state['decisions'].values()) and not state['busy']:
             if messagebox.askyesno('Сохранить результат?',
                                    'Есть решения, ещё не записанные в итоговый Excel. Сохранить их перед выходом?',
@@ -511,4 +524,10 @@ def run(app_dir, default_knowledge, version=''):
     root.protocol('WM_DELETE_WINDOW', on_close)
     show(process_frame)
     root.after(100, poll)
+    if smoke:
+        for frame in (process_frame, review_frame, done_frame):
+            show(frame)
+            root.update()
+        root.destroy()
+        return True
     root.mainloop()

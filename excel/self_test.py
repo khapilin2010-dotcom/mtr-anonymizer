@@ -105,13 +105,62 @@ def run():
             assert values[6]
             tested.append(suffix)
     expert_checks = expert_smoke()
+    exact_checks = exact_decision_smoke()
     if sys.platform=='win32':
         import tkinter as tk
         root=tk.Tk();root.withdraw();root.update();root.destroy()
     assert not any(n in sys.modules for n in ('mtr_core','MTR_Obezlichivatel','fitz','pymupdf'))
     return {'result':'SELF_TEST_OK','version':VERSION,'frozen':bool(getattr(sys,'frozen',False)),
-            'expert_checks':expert_checks,'database':'mtr_data.json.gz','database_sha256':hashlib.sha256(database_path().read_bytes()).hexdigest(),
+            'exact_decision_checks':exact_checks, 'expert_checks':expert_checks,'database':'mtr_data.json.gz','database_sha256':hashlib.sha256(database_path().read_bytes()).hexdigest(),
             'registry_count':len(az.registry),'formats':tested,'source_unchanged':True,
             'supplemental_sha256':supplemental_digest(),
             'reviewed_keep_count':len(REVIEWED_KEEP),
             'supplemental_rule_count':len(EXTRA_RULES) + len(EXTRA_GLOBAL_RULES)}
+
+def exact_decision_smoke():
+    """Exercise the production decision path inside the frozen Windows EXE."""
+    from openpyxl import Workbook, load_workbook
+    from excel.simple_store import SimpleKnowledgeStore
+    from excel.operator_engine import OperatorExpertAnonymizer
+    from excel.simple_review import build_review_queue
+    from excel.knowledge import case_key
+    from excel.knowledge_edit_io import export_editable, commit_editable
+    from excel.file_io import HEADERS
+    source = 'Модуль автоматизированной технологической обвязки скважин МОС-3/1 Чертеж МОС-29.М1'
+    with tempfile.TemporaryDirectory(prefix='MTR_Exact_') as tmp:
+        root = Path(tmp)
+        store = SimpleKnowledgeStore(root / 'local', root / 'База', 'engineer')
+        src = root / 'Исходный Excel.xlsx'; wb = Workbook(); ws = wb.active
+        ws.append(['Код Автодокс', 'Наименование', 'Завод'])
+        ws.append(['631-336536', source, ''])
+        wb.save(src); wb.close(); before = src.read_bytes()
+        out, report = process_file(src, root, OperatorExpertAnonymizer(store.snapshot()), knowledge_store=store)
+        row = store.session_rows(report['session'])[0]
+        store.decide(row, source, 'Оставить как в исходном')
+        assert build_review_queue(store, [report['session']]) == []
+        def final_value(path):
+            wb = load_workbook(path); ws = wb.active
+            value = ws.cell(2, [c.value for c in ws[1]].index(HEADERS[1]) + 1).value
+            wb.close(); return value
+        assert final_value(out) == source
+        repeated, _ = process_file(src, root, OperatorExpertAnonymizer(store.snapshot()), knowledge_store=store)
+        assert final_value(repeated) == source
+        changed = OperatorExpertAnonymizer(store.snapshot()).anonymize(source + ' другой', row['code'])
+        assert not changed['knowledge'].get('exact_applied') and changed['status'] == 'ЖЁЛТЫЙ'
+        export = root / 'База.xlsx'; export_editable(export, store)
+        wb = load_workbook(export); ws = wb['Управление']; cols = {c.value: c.column for c in ws[1]}
+        key = case_key(row['code'], source)
+        n = next(i for i in range(2, ws.max_row + 1) if ws.cell(i, cols['Ключ']).value == key)
+        ws.cell(n, cols['Новое решение'], source + ' проверено')
+        ws.cell(n, cols['Действие'], 'ИЗМЕНИТЬ'); ws.cell(n, cols['Причина изменения'], 'Проверка EXE')
+        wb.save(export); wb.close()
+        assert commit_editable(export, store)['applied'] == 1
+        assert OperatorExpertAnonymizer(store.snapshot()).anonymize(source, row['code'])['text'] == source + ' проверено'
+        store.control(key, True, 'Проверка отключения')
+        assert not OperatorExpertAnonymizer(store.snapshot()).anonymize(source, row['code'])['knowledge'].get('exact_applied')
+        assert src.read_bytes() == before
+        if sys.platform == 'win32':
+            from excel.simple_ui import run as simple_ui
+            assert simple_ui(root / 'ui', root / 'UI база', smoke=True)
+    return ['mos_keep_original', 'repeat_output', 'changed_source_review', 'excel_edit_import',
+            'disable_decision', 'recover_before_skip', 'original_unchanged'] + (['simple_ui'] if sys.platform == 'win32' else [])
