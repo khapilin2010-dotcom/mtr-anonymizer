@@ -31,21 +31,28 @@ def _case_event(source, final, user='ENGINEER\\one'):
     )
 
 
-def test_confirmed_case_is_advisory_by_default():
+def test_exact_case_is_applied_immediately_without_checkbox():
     source = 'Насос ZZZTESTBRAND'
     final = 'Насос'
     snapshot = Snapshot([_case_event(source, final)])
 
     cautious = OperatorExpertAnonymizer(snapshot, auto_apply_confirmed=False)
     result = cautious.anonymize(source)
-    assert result['text'] != final
-    assert result['status'] == 'ЖЁЛТЫЙ'
-    assert result['knowledge']['auto_apply'] is False
-    assert result['knowledge']['proposed'] == final
+    assert result['text'] == final
+    assert result['status'] == 'ЗЕЛЁНЫЙ'
+    assert result['knowledge']['status'] == 'ACTIVE'
 
     automatic = OperatorExpertAnonymizer(snapshot, auto_apply_confirmed=True)
     auto_result = automatic.anonymize(source)
     assert auto_result['text'] == final
+
+
+def test_exact_keep_original_is_applied_immediately():
+    source = 'Модуль МОС-3/1 Чертеж МОС-29.М1'
+    snapshot = Snapshot([_case_event(source, source)])
+    result = OperatorExpertAnonymizer(snapshot, auto_apply_confirmed=False).anonymize(source)
+    assert result['text'] == source
+    assert result['status'] == 'ЗЕЛЁНЫЙ'
 
 
 def test_simple_store_creates_adjacent_event_folder(tmp_path):
