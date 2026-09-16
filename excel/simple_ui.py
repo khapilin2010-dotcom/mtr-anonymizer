@@ -1,8 +1,8 @@
 """Simple field UI: file -> automatic pass -> one row -> one engineer decision.
 
-The knowledge database stays under the hood.  Every explicit decision is saved
-immediately, while the generated workbook is updated in one batch when the
-review is finished (or when the user explicitly saves current progress).
+The normal engineer workflow deliberately stays small.  Knowledge storage,
+audit and synchronization remain under the hood, but the user can export the
+knowledge base to Excel and load controlled corrections back when necessary.
 """
 import json
 import logging
@@ -14,7 +14,8 @@ import threading
 from excel.excel_engine import Anonymizer
 from excel.expert_engine import protection_losses
 from excel.file_io import SUPPORTED, process_file
-from excel.knowledge import case_key, normalize
+from excel.knowledge import normalize
+from excel.knowledge_edit_io import export_editable, preview_editable, commit_editable
 from excel.operator_engine import OperatorExpertAnonymizer
 from excel.output_update import apply_decisions
 from excel.simple_store import SimpleKnowledgeStore
@@ -43,8 +44,8 @@ def run(app_dir, default_knowledge, version=''):
 
     root = tk.Tk()
     root.title('MTR Excel — обезличивание')
-    root.geometry('1120x780')
-    root.minsize(940, 690)
+    root.geometry('1120x790')
+    root.minsize(940, 700)
     style = ttk.Style(root)
     style.theme_use('clam')
     style.configure('Big.TButton', padding=(14, 11), font=('Segoe UI', 10, 'bold'))
@@ -76,7 +77,6 @@ def run(app_dir, default_knowledge, version=''):
     review_frame = ttk.Frame(body)
     done_frame = ttk.Frame(body)
 
-    # ---- common helpers -------------------------------------------------
     progress = ttk.Progressbar(root, mode='indeterminate')
     progress.pack(fill='x', padx=18)
     ttk.Label(root, textvariable=status, wraplength=1060).pack(fill='x', padx=18, pady=(4, 10))
@@ -93,13 +93,14 @@ def run(app_dir, default_knowledge, version=''):
         cancel.clear()
         progress.configure(mode='indeterminate')
         progress.start(12)
+
         def worker():
             try:
-                result = work()
-                events.put(('done', result, done))
+                events.put(('done', work(), done))
             except Exception as exc:
                 logging.exception('Background operation failed')
                 events.put(('error', str(exc), None))
+
         threading.Thread(target=worker, daemon=True).start()
 
     def poll():
@@ -118,7 +119,7 @@ def run(app_dir, default_knowledge, version=''):
         root.after(100, poll)
 
     def choose_knowledge():
-        folder = filedialog.askdirectory(title='Папка базы знаний', initialdir=knowledge_label.get())
+        folder = filedialog.askdirectory(title='Папка базы решений', initialdir=knowledge_label.get())
         if not folder:
             return
         try:
@@ -126,17 +127,78 @@ def run(app_dir, default_knowledge, version=''):
             new_store.sync(auto_backup=False)
             state['store'] = new_store
             knowledge_label.set(str(new_store.shared))
-            status.set('База знаний подключена. Все новые решения будут сохраняться сюда.')
+            status.set('База решений подключена. Новые решения будут сохраняться сюда.')
         except Exception as exc:
             messagebox.showerror('Не удалось подключить базу', str(exc), parent=root)
 
-    # ---- process screen -------------------------------------------------
+    def export_base():
+        path = filedialog.asksaveasfilename(
+            title='Выгрузить базу решений в Excel', defaultextension='.xlsx',
+            filetypes=[('Excel', '*.xlsx')], initialfile='MTR_База_решений.xlsx')
+        if not path:
+            return
+
+        def work():
+            return export_editable(path, state['store'])
+
+        def done(saved):
+            status.set('База выгружена: ' + str(saved))
+            messagebox.showinfo(
+                'База выгружена',
+                'В Excel меняйте только «Новое решение», «Действие» и «Причина изменения».\n'
+                'После правки загрузите этот файл кнопкой «Загрузить исправленную базу».',
+                parent=root)
+
+        status.set('Выгружаю базу решений…')
+        run_job(work, done)
+
+    def import_base():
+        path = filedialog.askopenfilename(
+            title='Загрузить исправленную базу', filetypes=[('Excel', '*.xlsx')])
+        if not path:
+            return
+
+        def preview_work():
+            return preview_editable(path, state['store'])
+
+        def preview_done(plan):
+            text = f"Изменений к применению: {plan['ready']}. Проблемных строк: {len(plan['issues'])}."
+            if plan['issues']:
+                text += '\nПроблемные строки будут пропущены.'
+            if not plan['ready']:
+                messagebox.showinfo('База решений', text, parent=root)
+                return
+            if not messagebox.askyesno('Применить изменения базы?', text + '\n\nПродолжить?', parent=root):
+                return
+
+            def commit_work():
+                return commit_editable(path, state['store'])
+
+            def commit_done(report):
+                status.set(f"Изменений базы применено: {report['applied']}. Проблем: {len(report['issues'])}.")
+                message = status.get()
+                if report['issues']:
+                    message += '\n\n' + '\n'.join(f'Строка {n}: {reason}' for n, reason in report['issues'][:12])
+                messagebox.showinfo('База обновлена', message, parent=root)
+
+            status.set('Применяю исправления базы…')
+            run_job(commit_work, commit_done)
+
+        status.set('Проверяю исправленную базу…')
+        run_job(preview_work, preview_done)
+
+    def open_knowledge_folder():
+        folder = Path(knowledge_label.get())
+        if folder.exists() and hasattr(os, 'startfile'):
+            os.startfile(str(folder))
+
+    # ---- 1. file selection --------------------------------------------
     ttk.Label(process_frame, text='1. Выберите файл', font=('Segoe UI', 17, 'bold')).pack(anchor='w')
     ttk.Label(process_frame,
               text='Программа создаст отдельный обезличенный Excel. Исходный файл останется без изменений.',
               font=('Segoe UI', 10)).pack(anchor='w', pady=(2, 10))
 
-    listbox = tk.Listbox(process_frame, height=9, selectmode='extended', font=('Segoe UI', 10))
+    listbox = tk.Listbox(process_frame, height=8, selectmode='extended', font=('Segoe UI', 10))
     listbox.pack(fill='both', expand=True)
 
     filebar = ttk.Frame(process_frame); filebar.pack(fill='x', pady=7)
@@ -155,6 +217,7 @@ def run(app_dir, default_knowledge, version=''):
         for index in reversed(listbox.curselection()):
             state['files'].pop(index)
             listbox.delete(index)
+
     ttk.Button(filebar, text='Убрать выбранное', command=remove_selected).pack(side='left', padx=6)
 
     location = ttk.LabelFrame(process_frame, text='Куда сохранить результат', padding=9)
@@ -163,23 +226,31 @@ def run(app_dir, default_knowledge, version=''):
     ttk.Button(location, text='Выбрать…', command=lambda: output_dir.set(
         filedialog.askdirectory(title='Папка результата') or output_dir.get())).pack(side='left', padx=(6, 0))
 
-    kb = ttk.Frame(process_frame); kb.pack(fill='x', pady=(8, 3))
-    ttk.Label(kb, text='База решений:').pack(side='left')
-    ttk.Label(kb, textvariable=knowledge_label, foreground='#555555').pack(side='left', padx=5)
-    ttk.Button(kb, text='Сменить…', command=choose_knowledge).pack(side='right')
+    kb = ttk.LabelFrame(process_frame, text='База решений инженеров', padding=9)
+    kb.pack(fill='x', pady=(8, 3))
+    kb_top = ttk.Frame(kb); kb_top.pack(fill='x')
+    ttk.Label(kb_top, textvariable=knowledge_label, foreground='#555555').pack(side='left', fill='x', expand=True)
+    ttk.Button(kb_top, text='Сменить папку…', command=choose_knowledge).pack(side='right')
+    kb_buttons = ttk.Frame(kb); kb_buttons.pack(fill='x', pady=(6, 0))
+    ttk.Button(kb_buttons, text='Выгрузить базу в Excel…', command=export_base).pack(side='left')
+    ttk.Button(kb_buttons, text='Загрузить исправленную базу…', command=import_base).pack(side='left', padx=6)
+    ttk.Button(kb_buttons, text='Открыть папку базы', command=open_knowledge_folder).pack(side='left')
 
     def build_queue(session_ids):
+        """Only skip a row when this run actually applied an exact decision.
+
+        v1.7 skipped by the mere presence of a case entry.  Because Autodocs
+        codes are grouping keys, that could hide a row even when the saved full
+        result was not actually applied.  The processing session now records
+        ``exact_applied`` and that is the only knowledge-based skip condition.
+        """
         store = state['store']
         store.sync(auto_backup=False)
-        snapshot = store.snapshot()
         rows = []
         for sid in session_ids:
-            page = store.session_rows(sid, '', 0, 1000000)
-            for row in page:
-                entry = snapshot.entries.get(case_key(row.get('code', ''), row.get('source', ''), row.get('factory', '')))
-                # Exact engineer decisions are already final knowledge and do not
-                # need to annoy the engineer again on every run.
-                if entry and entry.get('kind') == 'case' and entry.get('status') in ('ACTIVE', 'TRUSTED'):
+            for row in store.session_rows(sid, '', 0, 1000000):
+                provenance = row.get('provenance') or {}
+                if provenance.get('exact_applied') is True:
                     continue
                 changed = normalize(row.get('source', '')) != normalize(row.get('automatic', ''))
                 if changed or row.get('status') != 'ЗЕЛЁНЫЙ':
@@ -190,17 +261,21 @@ def run(app_dir, default_knowledge, version=''):
         if not state['files']:
             messagebox.showinfo('Нет файлов', 'Добавьте хотя бы один Excel-файл.', parent=root)
             return
-        destination = Path(output_dir.get().strip())
-        if not str(destination):
+        destination_text = output_dir.get().strip()
+        if not destination_text:
             messagebox.showinfo('Папка результата', 'Укажите папку для результата.', parent=root)
             return
+        destination = Path(destination_text)
         targets = list(state['files'])
         store = state['store']
+
         def work():
             store.sync(auto_backup=False)
             outputs, sessions, errors = [], [], []
             for path in targets:
                 try:
+                    # Exact saved decisions are always applied; broader learned
+                    # DELETE rules remain conservative in the normal field mode.
                     az = OperatorExpertAnonymizer(store.snapshot(), auto_apply_confirmed=False)
                     dst, report = process_file(path, destination, az, knowledge_store=store, cancel=cancel)
                     outputs.append(str(dst))
@@ -210,6 +285,7 @@ def run(app_dir, default_knowledge, version=''):
                     errors.append(path.name + ': ' + str(exc))
             store.sync(auto_backup=False)
             return outputs, sessions, errors, build_queue(sessions)
+
         def done(result):
             outputs, sessions, errors, rows = result
             state['outputs'] = outputs
@@ -227,8 +303,9 @@ def run(app_dir, default_knowledge, version=''):
                 render_current()
             else:
                 status.set('Готово. Строк, требующих проверки, нет.')
+                done_text.set('Все точные решения базы применены. Итоговый файл готов.')
                 show(done_frame)
-                done_text.set('Проверка не потребовалась. Итоговые файлы готовы.')
+
         status.set('Обезличиваю файл…')
         run_job(work, done)
 
@@ -238,11 +315,11 @@ def run(app_dir, default_knowledge, version=''):
     def latest_session():
         store = state['store']
         with store.db() as db:
-            row = db.execute('SELECT session FROM rows GROUP BY session ORDER BY max(rowid) DESC LIMIT 1').fetchone()
-        if not row:
+            hit = db.execute('SELECT session FROM rows GROUP BY session ORDER BY max(rowid) DESC LIMIT 1').fetchone()
+        if not hit:
             messagebox.showinfo('Проверка', 'Предыдущих обработок пока нет.', parent=root)
             return
-        sid = row[0]
+        sid = hit[0]
         queue_rows = build_queue([sid])
         state['queue'] = queue_rows
         state['index'] = 0
@@ -255,9 +332,10 @@ def run(app_dir, default_knowledge, version=''):
             return
         show(review_frame)
         render_current()
+
     ttk.Button(process_frame, text='Продолжить последнюю проверку', command=latest_session).pack(fill='x')
 
-    # ---- review screen --------------------------------------------------
+    # ---- 2. row review --------------------------------------------------
     top_review = ttk.Frame(review_frame); top_review.pack(fill='x')
     ttk.Label(top_review, text='2. Проверьте результат', font=('Segoe UI', 17, 'bold')).pack(side='left')
     ttk.Label(top_review, textvariable=counter, font=('Segoe UI', 11, 'bold')).pack(side='right')
@@ -274,7 +352,8 @@ def run(app_dir, default_knowledge, version=''):
     final_text = tk.Text(final_box, height=7, wrap='word', font=('Consolas', 10))
     final_text.pack(fill='both', expand=True)
 
-    ttk.Label(review_frame, textvariable=removed_info, wraplength=1040, foreground='#8a3b12').pack(anchor='w', pady=(3, 8))
+    ttk.Label(review_frame, textvariable=removed_info, wraplength=1040,
+              foreground='#8a3b12').pack(anchor='w', pady=(3, 8))
 
     buttons = ttk.Frame(review_frame); buttons.pack(fill='x', pady=(4, 4))
     btn_program = ttk.Button(buttons, text='✓ Оставить результат программы', style='Big.TButton')
@@ -286,6 +365,7 @@ def run(app_dir, default_knowledge, version=''):
 
     smallbar = ttk.Frame(review_frame); smallbar.pack(fill='x', pady=(4, 0))
     ttk.Button(smallbar, text='Пропустить пока', command=lambda: next_row()).pack(side='left')
+    ttk.Button(smallbar, text='← Вернуться к выбору файла', command=lambda: show(process_frame)).pack(side='right')
 
     def set_text(widget, value, disabled=False):
         widget.configure(state='normal')
@@ -302,7 +382,9 @@ def run(app_dir, default_knowledge, version=''):
         state['current'] = row
         counter.set(f"{state['index'] + 1} из {len(state['queue'])}")
         code = row.get('code', '') or 'без кода'
-        row_info.set(f"Код Автодокс: {code}   •   Лист: {row.get('sheet','')}   •   Строка: {row.get('row','')}   •   Статус программы: {row.get('status','')}")
+        row_info.set(
+            f"Код Автодокс: {code}   •   Лист: {row.get('sheet','')}   •   "
+            f"Строка: {row.get('row','')}   •   Статус программы: {row.get('status','')}")
         set_text(source_text, row.get('source', ''), True)
         set_text(final_text, row.get('automatic', ''))
         removed = row.get('removed') or []
@@ -327,7 +409,8 @@ def run(app_dir, default_knowledge, version=''):
             state['store'].sync(auto_backup=False)
             state['decisions'].setdefault(row['session'], []).append(
                 {'row': row, 'final': final, 'action': action})
-            status.set('Решение сохранено в базе.' if event else 'Такое решение уже было в базе.')
+            status.set('Решение сохранено в базе и будет приоритетным для этой же строки.'
+                       if event else 'Такое решение уже есть в базе.')
             next_row()
         except Exception as exc:
             messagebox.showerror('Решение не сохранено', str(exc), parent=root)
@@ -344,7 +427,8 @@ def run(app_dir, default_knowledge, version=''):
         render_current()
 
     savebar = ttk.Frame(review_frame); savebar.pack(fill='x', pady=(8, 0))
-    ttk.Button(savebar, text='Сохранить принятые решения в Excel сейчас', command=lambda: flush_outputs(False)).pack(side='right')
+    ttk.Button(savebar, text='Сохранить принятые решения в Excel сейчас',
+               command=lambda: flush_outputs(True)).pack(side='right')
 
     def flush_outputs(show_message=True, callback=None):
         decisions = {sid: list(items) for sid, items in state['decisions'].items() if items}
@@ -355,6 +439,7 @@ def run(app_dir, default_knowledge, version=''):
                 messagebox.showinfo('Сохранение', 'Новых решений для записи в Excel нет.', parent=root)
             return
         store = state['store']
+
         def work():
             updated = []
             for sid, items in decisions.items():
@@ -364,6 +449,7 @@ def run(app_dir, default_knowledge, version=''):
                 apply_decisions(path, items)
                 updated.append(path)
             return updated
+
         def done(paths):
             for sid in decisions:
                 state['decisions'][sid] = []
@@ -371,23 +457,23 @@ def run(app_dir, default_knowledge, version=''):
                 messagebox.showinfo('Готово', 'Исправления записаны в итоговый Excel.', parent=root)
             if callback:
                 callback(paths)
+
         status.set('Записываю решения в итоговый Excel…')
         run_job(work, done)
 
     def finish_review():
         def after(_paths):
             try:
-                state['store'].sync()
+                state['store'].sync(auto_backup=False)
             except Exception:
                 pass
             done_text.set('Проверка завершена. Решения сохранены в базе, итоговый Excel обновлён.')
             status.set('Готово. Итоговый Excel можно использовать.')
             show(done_frame)
-        flush_outputs(False, after)
-        if not any(state['decisions'].values()):
-            after([])
 
-    # ---- done screen ----------------------------------------------------
+        flush_outputs(False, after)
+
+    # ---- 3. done --------------------------------------------------------
     done_text = tk.StringVar(value='Готово.')
     ttk.Label(done_frame, text='3. Готово', font=('Segoe UI', 19, 'bold')).pack(anchor='w', pady=(10, 8))
     ttk.Label(done_frame, textvariable=done_text, wraplength=900, font=('Segoe UI', 11)).pack(anchor='w', pady=(0, 18))
@@ -396,23 +482,29 @@ def run(app_dir, default_knowledge, version=''):
         folder = Path(output_dir.get())
         if folder.exists() and hasattr(os, 'startfile'):
             os.startfile(str(folder))
-    ttk.Button(done_frame, text='Открыть папку с результатами', style='Primary.TButton', command=open_results).pack(fill='x', pady=4)
+
+    ttk.Button(done_frame, text='Открыть папку с результатами', style='Primary.TButton',
+               command=open_results).pack(fill='x', pady=4)
 
     def new_run():
-        state['files'].clear(); listbox.delete(0, 'end')
-        state['queue'] = []; state['index'] = 0; state['decisions'] = {}; state['current'] = None
+        state['files'].clear()
+        listbox.delete(0, 'end')
+        state['queue'] = []
+        state['index'] = 0
+        state['decisions'] = {}
+        state['current'] = None
         status.set('Добавьте следующий Excel-файл.')
         show(process_frame)
-    ttk.Button(done_frame, text='Обработать ещё один файл', command=new_run).pack(fill='x', pady=4)
 
-    # Closing with unsaved workbook decisions should not silently lose the
-    # visible result, although the knowledge events are already durable.
+    ttk.Button(done_frame, text='Обработать ещё один файл', command=new_run).pack(fill='x', pady=4)
+    ttk.Button(done_frame, text='Выгрузить базу решений в Excel…', command=export_base).pack(fill='x', pady=4)
+
     def on_close():
         if any(state['decisions'].values()) and not state['busy']:
             if messagebox.askyesno('Сохранить результат?',
-                                   'Есть решения, ещё не записанные в итоговый Excel. Сохранить их перед выходом?', parent=root):
-                def finish_close(_): root.destroy()
-                flush_outputs(False, finish_close)
+                                   'Есть решения, ещё не записанные в итоговый Excel. Сохранить их перед выходом?',
+                                   parent=root):
+                flush_outputs(False, lambda _: root.destroy())
                 return
         root.destroy()
 
