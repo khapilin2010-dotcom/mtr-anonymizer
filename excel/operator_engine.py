@@ -1,15 +1,14 @@
 """Operator-facing expert engine.
 
-Exact engineer decisions are authoritative for the same resource immediately
-after one explicit confirmation.  They are therefore applied on every future
-matching run without an extra checkbox.  The optional auto-apply flag now only
-controls broader learned DELETE rules; conservative KEEP rules may still protect
-text automatically because keeping extra text cannot cause over-anonymization.
+Exact engineer decisions are authoritative for the same unchanged resource.
+They are applied directly before static anonymization, so an explicitly saved
+engineer result cannot be removed again on the next pass.  Broader learned
+rules stay conservative unless automatic application is enabled.
 """
 import os
 
-from excel.expert_engine import ExpertAnonymizer as _ExpertAnonymizer
-from excel.knowledge import case_key
+from excel.expert_engine import ExpertAnonymizer as _ExpertAnonymizer, protection_losses
+from excel.knowledge import case_key, fragments, normalize
 from excel.semantics import features
 
 
@@ -19,32 +18,94 @@ def auto_apply_enabled():
     }
 
 
+def _same_exact_context(entry, source, factory):
+    """A code match alone is not enough for an exact engineer decision.
+
+    ``case_key`` intentionally uses the Autodocs code when it exists.  That is
+    useful for grouping history, but it means a changed source string may still
+    resolve to the same entry.  We only call a decision *exact* when the source
+    and factory from the saved event still match the current row.
+    """
+    sample = entry.get('sample', {}) if entry else {}
+    saved_source = sample.get('source', '')
+    saved_factory = sample.get('factory', '')
+    return (
+        bool(saved_source)
+        and normalize(saved_source) == normalize(source)
+        and normalize(saved_factory) == normalize(factory)
+    )
+
+
 class OperatorExpertAnonymizer(_ExpertAnonymizer):
     def __init__(self, snapshot, base=None, auto_apply_confirmed=None):
         super().__init__(snapshot, base)
         self.auto_apply_confirmed = (auto_apply_enabled() if auto_apply_confirmed is None
                                      else bool(auto_apply_confirmed))
 
+    def _apply_exact_case(self, entry, source, code, factory):
+        """Return the engineer's exact result without re-running static rules."""
+        final = str(entry.get('value', ''))
+        if not final.strip():
+            return None
+        # Old/imported databases may contain unsafe edits.  Never silently use
+        # an exact result that loses protected technical information.
+        losses = protection_losses(source, final, self.base, code, factory)
+        if losses:
+            return None
+        info = features(source, factory, code, self.base)
+        removed, _restored = fragments(source, final)
+        result = {
+            'text': final,
+            'factory': info.get('factory', factory),
+            'status': 'ЗЕЛЁНЫЙ',
+            'changed': normalize(final) != normalize(source),
+            'reason': 'Точное решение инженера',
+            'removed': ['Решение инженера: ' + x for x in removed if str(x).strip()],
+            'trace': [],
+            'protected': list(info.get('technical', [])),
+            'classification': info,
+            'knowledge': {
+                'version': self.snapshot.version,
+                'source': 'Точное решение инженера',
+                'status': entry.get('status', 'ACTIVE'),
+                'score': entry.get('score'),
+                'confirmations': entry.get('confirmations', 0),
+                'opposition': entry.get('opposition', 0),
+                'key': entry.get('key'),
+                'events': [e.get('id') for e in entry.get('live', []) if e.get('id')],
+                'exact_applied': True,
+                'auto_apply': True,
+            },
+        }
+        return result
+
     def anonymize(self, name, code='', factory=''):
         source = str(name or '')
         entry = self.snapshot.entries.get(case_key(code, source, factory))
 
-        # One explicit engineer decision for this exact resource becomes ACTIVE
-        # immediately in Snapshot.  Exact decisions always outrank the static
-        # anonymizer, including «Оставить как в исходном».  The checkbox is not
-        # required for this path; otherwise an engineer could correct the same
-        # row and watch the program repeat the old mistake on the next run.
-        if entry and entry.get('kind') == 'case' and entry.get('status') in ('ACTIVE', 'TRUSTED'):
-            return super().anonymize(source, code, factory)
+        # Critical product rule: the engineer's decision for the same unchanged
+        # row outranks every static/general rule.  Do not call the parent engine
+        # here; doing so can repeat the very deletion the engineer corrected.
+        if (entry and entry.get('kind') == 'case'
+                and entry.get('status') in ('ACTIVE', 'TRUSTED')
+                and _same_exact_context(entry, source, factory)):
+            exact = self._apply_exact_case(entry, source, code, factory)
+            if exact is not None:
+                return exact
 
-        if self.auto_apply_confirmed:
+        # A code may point to a historical case whose source has since changed.
+        # Never treat that stale full-row decision as exact.  In that situation
+        # continue with the conservative operator path and show it for review.
+        stale_case = bool(entry and entry.get('kind') == 'case'
+                          and not _same_exact_context(entry, source, factory))
+        if self.auto_apply_confirmed and not stale_case:
             return super().anonymize(source, code, factory)
 
         info = features(source, factory, code, self.base)
         matches = self.matching_rules(source, info)
 
         # General KEEP knowledge is safe to apply automatically: it can only
-        # prevent an existing deletion. General DELETE knowledge remains
+        # prevent an existing deletion.  General DELETE knowledge remains
         # advisory while automatic broader rules are disabled.
         keep_spans = [span for e, spans in matches
                       if e['value'] == 'KEEP' and e['status'] in ('ACTIVE', 'TRUSTED')
@@ -57,7 +118,7 @@ class OperatorExpertAnonymizer(_ExpertAnonymizer):
         result['knowledge'] = dict(version=self.snapshot.version,
                                    source='Статическая база + рекомендации инженеров',
                                    status='ADVISORY', events=[], score=None,
-                                   auto_apply=False)
+                                   auto_apply=False, exact_applied=False)
 
         red = []
         advice = []
@@ -66,9 +127,12 @@ class OperatorExpertAnonymizer(_ExpertAnonymizer):
                           'Код Автодокс' if str(code).strip()
                           else 'Точное наименование и завод')
             result['knowledge']['auto_apply'] = False
+            result['knowledge']['exact_applied'] = False
             result['knowledge']['proposed'] = entry['value']
             if entry['status'] == 'DISPUTED':
                 red.append('Инженеры сохранили разные решения')
+            elif stale_case:
+                advice.append('Для этого кода есть решение, но исходное наименование изменилось; требуется проверка')
             elif entry['status'] in ('ACTIVE', 'TRUSTED'):
                 advice.append('Есть ранее подтверждённое решение')
 
