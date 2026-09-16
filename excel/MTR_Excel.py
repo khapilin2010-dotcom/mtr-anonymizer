@@ -8,7 +8,7 @@ import sys
 if __package__ in (None, ''):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-APP_VERSION = '1.6 RC1'
+APP_VERSION = '1.7 RC1'
 APP_DIR = Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'MTR_Excel'
 PROGRAM_DIR = (Path(sys.executable).resolve().parent if getattr(sys, 'frozen', False)
                else Path(__file__).resolve().parents[1])
@@ -24,6 +24,7 @@ def self_test(marker):
     _set_runtime_version()
     from excel.self_test import run
     report = run()
+    report['version'] = APP_VERSION
     Path(marker).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
 
 
@@ -37,11 +38,7 @@ def _operator_store(shared=None):
 
 
 def _install_operator_policy():
-    """Patch only the classes imported by the existing mature UI.
-
-    The old UI/review workflow stays intact.  We swap in the simplified store
-    and conservative learned-decision policy before importing that UI module.
-    """
+    """Compatibility hook for the legacy advanced UI and command workflows."""
     import excel.knowledge as knowledge
     import excel.expert_engine as expert_engine
     from excel.simple_store import SimpleKnowledgeStore
@@ -58,7 +55,7 @@ def main():
     parser.add_argument('--output')
     parser.add_argument('--shared', help='Папка базы знаний; по умолчанию MTR_Knowledge рядом с программой')
     parser.add_argument('--auto-confirmed', action='store_true',
-                        help='Автоматически применять ранее подтверждённые решения')
+                        help='Автоматически применять подтверждённые ОБЩИЕ правила; точные решения инженера применяются всегда')
     parser.add_argument('--import-review', metavar='FILE', help='Вернуть проверенный Excel этой программы')
     parser.add_argument('--import-history', metavar='FILE', help='Импорт старой проверенной/обезличенной выборки')
     parser.add_argument('--export-knowledge', metavar='FILE', help='Выгрузить базу знаний для редактирования')
@@ -121,16 +118,9 @@ def main():
 
 def gui():
     _set_runtime_version()
-    from excel.launcher import run as launcher
-
-    def open_main(selected_folder, auto_apply):
-        os.environ['MTR_KNOWLEDGE_DIR'] = str(selected_folder)
-        os.environ['MTR_AUTO_APPLY_CONFIRMED'] = '1' if auto_apply else '0'
-        _install_operator_policy()
-        from excel.expert_ui import gui as expert_gui
-        expert_gui(APP_DIR)
-
-    launcher(APP_DIR, DEFAULT_KNOWLEDGE, open_main)
+    os.environ['MTR_AUTO_APPLY_CONFIRMED'] = '0'
+    from excel.simple_ui import run
+    run(APP_DIR, DEFAULT_KNOWLEDGE, APP_VERSION)
 
 
 if __name__ == '__main__':
