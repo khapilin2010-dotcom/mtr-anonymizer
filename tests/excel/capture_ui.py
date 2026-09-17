@@ -2,6 +2,7 @@
 from pathlib import Path
 from contextlib import ExitStack
 import logging
+import gc
 import sys
 import tempfile
 import time
@@ -76,6 +77,8 @@ def main():
             root.destroy()
         with patch.object(tk.Tk, 'mainloop', capture_start):
             run(folder / 'local', folder / 'База решений', APP_VERSION)
+        # Release Tk cycles on the UI thread before the next dialog starts its worker.
+        gc.collect()
         store = SimpleKnowledgeStore(folder / 'import-local', folder / 'База решений', 'Инженер')
         path = folder / 'Проверенная выборка.xlsx'; wb = Workbook(); ws = wb.active
         ws.append(['Код Автодокс', 'Исходное наименование', 'Обезличенное наименование', 'Завод'])

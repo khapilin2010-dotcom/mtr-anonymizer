@@ -104,8 +104,11 @@ def run():
             assert values[4]==f'Клапан {keep}',values[4]
             assert values[6]
             tested.append(suffix)
+    import gc
     expert_checks = expert_smoke()
+    gc.collect()
     exact_checks = exact_decision_smoke()
+    gc.collect()
     selection_checks = selection_import_smoke()
     learning_checks = learning_smoke()
     if sys.platform=='win32':
