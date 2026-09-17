@@ -54,7 +54,7 @@ def export_editable(path, store):
         example = sample.get('source', sample.get('example', ''))
         latest = max(entry.get('live') or entry['history'], key=lambda event: (event['timestamp'], event['id']))
         action = {'Правильно': 'Оставить результат программы', 'Исправить': 'Исправить результат'}.get(latest.get('action', ''), latest.get('action', ''))
-        ws.append([key, type_names.get(entry.get('kind', ''), entry.get('kind', '')),
+        ws.append([key, 'Сохранение серии' if sample.get('series_rule') else type_names.get(entry.get('kind', ''), entry.get('kind', '')),
                    STATUS_NAMES.get(entry.get('status'), 'ТРЕБУЕТ ПРОВЕРКИ'), display_value(entry), '', '',
                    entry.get('confirmations', 0), str(scope), example, '',
                    sample.get('code', ''), example, sample.get('factory', scope.get('factory', '')),

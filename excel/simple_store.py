@@ -11,12 +11,26 @@ wrapper only changes two product decisions:
 SQLite is still LOCAL cache only; it is never placed on a shared/network disk.
 """
 from pathlib import Path
+from collections import defaultdict
 import os
 
 from excel.knowledge import KnowledgeStore as _KnowledgeStore, Snapshot, contextual_events
 
 
 class SimpleSnapshot(Snapshot):
+    def __init__(self, events, admins=()):
+        from excel.series_learning import derived_events
+        super().__init__(events + derived_events(events, admins), admins)
+        self.series_index = defaultdict(list)
+        from excel.semantics import folded
+        for entry in self.entries.values():
+            if entry['sample'].get('series_rule'):
+                self.series_index[folded(entry['sample']['fragment'])].append(entry)
+            if (entry['sample'].get('series_rule') and entry['value'] == 'KEEP'
+                    and entry['status'] == 'CANDIDATE'
+                    and not any(e.get('requested_status') == 'CANDIDATE' for e in entry['history'])):
+                entry['status'] = 'ACTIVE'
+
     @staticmethod
     def live(events, cross_user=False):
         # A deliberate correction supersedes every observed exact decision.

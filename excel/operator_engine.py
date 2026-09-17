@@ -78,6 +78,29 @@ class OperatorExpertAnonymizer(_ExpertAnonymizer):
         return result
 
     def anonymize(self, name, code='', factory=''):
+        from excel.series_learning import matching_series
+        source = str(name or '')
+        info = features(source, factory, code, self.base)
+        matches = matching_series(self.snapshot, source, info)
+        keeps = [span for entry, spans in matches
+                 if entry['value'] == 'KEEP' and entry['status'] in ('ACTIVE', 'TRUSTED') for span in spans]
+        result = self._anonymize_scoped(source, code, factory, keeps)
+        if result.get('knowledge', {}).get('exact_applied'):
+            return result
+        applied = [entry for entry, _ in matches if entry['value'] == 'KEEP' and entry['status'] in ('ACTIVE', 'TRUSTED')]
+        disputed = [entry for entry, _ in matches if entry['status'] == 'DISPUTED']
+        if applied:
+            labels = list(dict.fromkeys(e['sample']['fragment'] for e in applied))
+            result['knowledge']['series_rules'] = [e['key'] for e in applied]
+            result['knowledge']['series_kept'] = labels
+            result['knowledge']['source'] = 'Обучение по решениям инженера'
+            result['reason'] = 'По решениям инженера сохранено: ' + ', '.join(labels) + ('; ' + result['reason'] if result.get('reason') else '')
+        if disputed:
+            result['knowledge']['series_conflicts'] = [e['key'] for e in disputed]
+            return self.conflict(result, 'Противоречивые решения по обозначению: ' + ', '.join(dict.fromkeys(e['sample']['fragment'] for e in disputed)))
+        return result
+
+    def _anonymize_scoped(self, name, code='', factory='', learned_keeps=()):
         source = str(name or '')
         entry = self.snapshot.entries.get(case_key(code, source, factory))
 
@@ -97,7 +120,7 @@ class OperatorExpertAnonymizer(_ExpertAnonymizer):
         stale_case = bool(not entry and code_key(code)
                           and self.snapshot.cases_by_code.get(code_key(code)))
         if self.auto_apply_confirmed and not stale_case:
-            return super().anonymize(source, code, factory)
+            return super().anonymize(source, code, factory, extra_keeps=learned_keeps)
 
         info = features(source, factory, code, self.base)
         matches = self.matching_rules(source, info)
@@ -110,7 +133,7 @@ class OperatorExpertAnonymizer(_ExpertAnonymizer):
                       for span in spans]
         disabled = self.snapshot.static_disabled
         result = self.base.anonymize(source, code, factory,
-                                     expert_keeps=keep_spans,
+                                     expert_keeps=keep_spans + list(learned_keeps),
                                      disabled_rules=disabled)
         result['classification'] = info
         result['knowledge'] = dict(version=self.snapshot.version,

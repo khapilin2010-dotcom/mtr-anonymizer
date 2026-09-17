@@ -19,7 +19,9 @@ from excel.knowledge_edit_io import export_editable, preview_editable, commit_ed
 from excel.operator_engine import OperatorExpertAnonymizer
 from excel.output_update import apply_decisions
 from excel.simple_store import SimpleKnowledgeStore
-from excel.simple_review import build_review_queue
+from excel.simple_review import build_review_queue, refresh_review_row
+from excel.review_display import change_spans, restored_spans
+from excel.sync_feedback import feedback
 from excel.theme import apply_theme, text_colors, MUTED
 from excel.history_import_ui import show_import_dialog
 
@@ -54,7 +56,7 @@ def run(app_dir, default_knowledge, version='', smoke=False):
     state = {
         'store': SimpleKnowledgeStore(app_dir) if config_path.exists() else SimpleKnowledgeStore(app_dir, configured),
         'files': [], 'outputs': [], 'queue': [], 'index': 0,
-        'decisions': {}, 'busy': False, 'current': None,
+        'decisions': {}, 'busy': False, 'current': None, 'sync_warning': None, 'highlight_after': None,
     }
     events = queue.Queue()
     cancel = threading.Event()
@@ -66,6 +68,7 @@ def run(app_dir, default_knowledge, version='', smoke=False):
     counter = tk.StringVar(value='')
     row_info = tk.StringVar(value='')
     removed_info = tk.StringVar(value='')
+    learned_info = tk.StringVar(value='')
 
     footer = ttk.Frame(root); footer.pack(side='bottom', fill='x')
     header = ttk.Frame(root, padding=(18, 14, 18, 8), style='Header.TFrame'); header.pack(fill='x')
@@ -119,6 +122,22 @@ def run(app_dir, default_knowledge, version='', smoke=False):
             pass
         root.after(100, poll)
 
+    def show_sync(report, explicit=False):
+        notice = feedback(state['store'].shared, report)
+        if notice['ok']:
+            state['sync_warning'] = None
+        elif state['sync_warning'] != notice['signature'] or explicit:
+            messagebox.showwarning(notice['title'], notice['details'], parent=root)
+            state['sync_warning'] = notice['signature']
+        if explicit and notice['ok']:
+            messagebox.showinfo(notice['title'], notice['details'], parent=root)
+        status.set(notice['short'])
+        return notice
+
+    def check_connection():
+        if not state['busy']:
+            run_job(lambda: state['store'].sync(auto_backup=False), lambda report: show_sync(report, True))
+
     def choose_knowledge():
         if state['busy'] or any(state['decisions'].values()):
             messagebox.showinfo('База решений', 'Сначала завершите текущую проверку.', parent=root)
@@ -128,10 +147,10 @@ def run(app_dir, default_knowledge, version='', smoke=False):
             return
         try:
             new_store = SimpleKnowledgeStore(app_dir, folder)
-            new_store.sync(auto_backup=False)
+            report = new_store.sync(auto_backup=False)
             state['store'] = new_store
             knowledge_label.set(str(new_store.shared))
-            status.set('База решений подключена. Новые решения будут сохраняться сюда.')
+            show_sync(report, True)
         except Exception as exc:
             messagebox.showerror('Не удалось подключить базу', str(exc), parent=root)
 
@@ -259,7 +278,9 @@ def run(app_dir, default_knowledge, version='', smoke=False):
     ttk.Button(kb_buttons, text='Загрузить исправленную базу…', command=import_base).pack(side='left', padx=6)
     ttk.Button(kb_buttons, text='Открыть папку базы', command=open_knowledge_folder).pack(side='left')
 
-    ttk.Button(kb, text='Загрузить ранее обезличенную выборку…', command=import_selection).pack(anchor='w', pady=(8, 0))
+    importbar = ttk.Frame(kb); importbar.pack(fill='x', pady=(8, 0))
+    ttk.Button(importbar, text='Загрузить ранее обезличенную выборку…', command=import_selection).pack(side='left')
+    ttk.Button(importbar, text='Проверить связь с базой', command=check_connection).pack(side='left', padx=6)
 
     def build_queue(session_ids):
         return build_review_queue(state['store'], session_ids, base)
@@ -354,6 +375,8 @@ def run(app_dir, default_knowledge, version='', smoke=False):
     ttk.Button(process_controls, text='Продолжить последнюю проверку', command=latest_session).pack(fill='x')
 
     # ---- 2. row review --------------------------------------------------
+    review_actions = ttk.Frame(review_frame)
+    review_actions.pack(side='bottom', fill='x')
     top_review = ttk.Frame(review_frame); top_review.pack(fill='x')
     ttk.Label(top_review, text='2. Проверьте результат', font=('Segoe UI', 17, 'bold')).pack(side='left')
     ttk.Label(top_review, textvariable=counter, font=('Segoe UI', 11, 'bold')).pack(side='right')
@@ -363,17 +386,22 @@ def run(app_dir, default_knowledge, version='', smoke=False):
     source_box.pack(fill='both', expand=True, pady=4)
     source_text = tk.Text(source_box, **text_colors(), height=4, wrap='word', font=('Consolas', 10))
     source_text.pack(fill='both', expand=True)
+    source_text.tag_configure('deleted', background='#FFD8D8', foreground='#8A1616')
     source_text.configure(state='disabled')
 
     final_box = ttk.LabelFrame(review_frame, text='Результат — его можно исправить прямо здесь', padding=7)
     final_box.pack(fill='both', expand=True, pady=4)
     final_text = tk.Text(final_box, **text_colors(), height=4, wrap='word', font=('Consolas', 10))
     final_text.pack(fill='both', expand=True)
+    final_text.tag_configure('restored', background='#DDF3DF', foreground='#145D2B')
+    final_text.tag_configure('added', background='#E2EEFF', foreground='#184F91')
+    ttk.Label(review_actions, text='Красным в исходном — удаляемый текст; зелёным в результате — восстановленный; голубым — добавленный.', wraplength=900).pack(anchor='w')
+    ttk.Label(review_actions, textvariable=learned_info, wraplength=900).pack(anchor='w')
 
-    ttk.Label(review_frame, textvariable=removed_info, wraplength=1040,
+    ttk.Label(review_actions, textvariable=removed_info, wraplength=900,
               foreground='#8a3b12').pack(anchor='w', pady=(3, 8))
 
-    buttons = ttk.Frame(review_frame); buttons.pack(fill='x', pady=(4, 4))
+    buttons = ttk.Frame(review_actions); buttons.pack(fill='x', pady=(4, 4))
     btn_program = ttk.Button(buttons, text='✓ Оставить результат программы', style='Big.TButton')
     btn_program.pack(side='left', fill='x', expand=True, padx=(0, 4))
     btn_fix = ttk.Button(buttons, text='✎ Сохранить моё исправление', style='Big.TButton')
@@ -381,7 +409,7 @@ def run(app_dir, default_knowledge, version='', smoke=False):
     btn_original = ttk.Button(buttons, text='↩ Оставить как в исходном', style='Big.TButton')
     btn_original.pack(side='left', fill='x', expand=True, padx=(4, 0))
 
-    smallbar = ttk.Frame(review_frame); smallbar.pack(fill='x', pady=(4, 0))
+    smallbar = ttk.Frame(review_actions); smallbar.pack(fill='x', pady=(4, 0))
     ttk.Button(smallbar, text='Пропустить пока', command=lambda: next_row()).pack(side='left')
     ttk.Button(smallbar, text='← Вернуться к выбору файла', command=lambda: show(process_frame)).pack(side='right')
 
@@ -392,11 +420,39 @@ def run(app_dir, default_knowledge, version='', smoke=False):
         if disabled:
             widget.configure(state='disabled')
 
+    def highlight_changes():
+        state['highlight_after'] = None
+        row = state['current']
+        if not row:
+            return
+        source = row['source']
+        final = final_text.get('1.0', 'end-1c')
+        deleted, added = change_spans(source, final)
+        restored = restored_spans(source, row.get('initial_automatic', row.get('automatic', '')), final)
+        from excel.series_learning import family_spans
+        for family in row.get('provenance', {}).get('series_kept', []):
+            restored.extend(family_spans(final, family, whole_model=True))
+        for widget, tag, spans in ((source_text, 'deleted', deleted), (final_text, 'added', added), (final_text, 'restored', restored)):
+            widget.tag_remove(tag, '1.0', 'end')
+            for start, end in spans:
+                widget.tag_add(tag, f'1.0+{start}c', f'1.0+{end}c')
+        removed_info.set('Будет удалено: ' + ('; '.join(source[a:b].strip() for a, b in deleted) or 'ничего'))
+
+    def editor_changed(_event=None):
+        if final_text.edit_modified():
+            final_text.edit_modified(False)
+            if state['highlight_after']:
+                root.after_cancel(state['highlight_after'])
+            state['highlight_after'] = root.after(100, highlight_changes)
+
+    final_text.bind('<<Modified>>', editor_changed)
+
     def render_current():
         if not state['queue'] or state['index'] >= len(state['queue']):
             finish_review()
             return
-        row = state['queue'][state['index']]
+        row = refresh_review_row(state['store'], state['queue'][state['index']], base)
+        state['queue'][state['index']] = row
         state['current'] = row
         counter.set(f"{state['index'] + 1} из {len(state['queue'])}")
         code = row.get('code', '') or 'без кода'
@@ -405,8 +461,11 @@ def run(app_dir, default_knowledge, version='', smoke=False):
             f"Строка: {row.get('row','')}   •   Статус программы: {row.get('status','')}")
         set_text(source_text, row.get('source', ''), True)
         set_text(final_text, row.get('automatic', ''))
-        removed = row.get('removed') or []
-        removed_info.set('Программа удалила: ' + ('; '.join(map(str, removed)) if removed else 'ничего'))
+        knowledge = row.get('provenance', {})
+        learned_info.set(('Требуется проверка: противоречивые решения по обозначению.' if knowledge.get('series_conflicts') else
+                          'По решениям инженера сохранено: ' + ', '.join(knowledge['series_kept']))
+                         if knowledge.get('series_conflicts') or knowledge.get('series_kept') else '')
+        highlight_changes()
         final_text.focus_set()
 
     def validate(row, final):
@@ -427,13 +486,11 @@ def run(app_dir, default_knowledge, version='', smoke=False):
             final = validate(row, final)
             event = state['store'].decide(row, final, action)
             sync = state['store'].sync(auto_backup=False)
-            if not sync['online'] or sync.get('pending') or sync.get('errors'):
-                messagebox.showwarning('Общая база недоступна', 'Решение сохранено на этом компьютере. После восстановления связи оно будет отправлено в общую базу.', parent=root)
+            notice = show_sync(sync)
             row['final'] = final
             state['decisions'].setdefault(row['session'], []).append(
                 {'row': row, 'final': final, 'action': action})
-            status.set('Решение сохранено в базе и будет приоритетным для этой же строки.'
-                       if event else 'Такое решение уже есть в базе.')
+            status.set(('Решение сохранено в базе.' if event else 'Такое решение уже есть в базе.') if notice['ok'] else notice['short'])
             next_row()
         except Exception as exc:
             messagebox.showerror('Решение не сохранено', str(exc), parent=root)
@@ -451,7 +508,7 @@ def run(app_dir, default_knowledge, version='', smoke=False):
         state['index'] += 1
         render_current()
 
-    savebar = ttk.Frame(review_frame); savebar.pack(fill='x', pady=(8, 0))
+    savebar = ttk.Frame(review_actions); savebar.pack(fill='x', pady=(8, 0))
     ttk.Button(savebar, text='Сохранить принятые решения в Excel сейчас',
                command=lambda: flush_outputs(True)).pack(side='right')
 

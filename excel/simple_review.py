@@ -38,3 +38,16 @@ def build_review_queue(store, session_ids, base=None):
             # rows while the workbook still contains the obsolete automatic text.
             apply_decisions(output, updates)
     return queue
+
+
+def refresh_review_row(store, row, base=None):
+    """Recompute a queued row against decisions accepted during this session."""
+    snapshot = store.snapshot()
+    if row.get('provenance', {}).get('version') == snapshot.version:
+        return row
+    result = OperatorExpertAnonymizer(snapshot, base=base, auto_apply_confirmed=True).anonymize(
+        row['source'], row['code'], row['factory'])
+    return dict(row, initial_automatic=row.get('initial_automatic', row['automatic']),
+                automatic=result['text'], status=result['status'],
+                reason=result.get('reason', ''), removed=result.get('removed', []),
+                classification=result.get('classification'), provenance=result.get('knowledge', {}))

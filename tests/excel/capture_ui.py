@@ -16,6 +16,9 @@ from excel.simple_store import SimpleKnowledgeStore
 from excel.history_import_ui import SelectionDialog
 from excel.theme import apply_theme
 from excel.MTR_Excel import APP_VERSION
+from excel.file_io import process_file
+from excel.operator_engine import OperatorExpertAnonymizer
+from excel.semantics import features
 
 
 def capture(widget, destination):
@@ -40,8 +43,34 @@ def main():
     with tempfile.TemporaryDirectory(prefix='MTR_UI_') as tmp, ExitStack() as cleanup:
         cleanup.callback(logging.shutdown)
         folder = Path(tmp)
+        # Populate a real session so the review capture uses production widgets,
+        # queue restoration and learning, not a separate demonstration layout.
+        store = SimpleKnowledgeStore(folder / 'local', folder / 'База решений', 'Инженер')
+        known = 'Панель ПКМ-ТСТ-1'
+        store.decide(dict(id='demo', session='demo', code='DEMO-1', source=known,
+                          automatic='Панель', factory='', classification=features(known)), known,
+                     'Оставить как в исходном')
+        path = folder / 'Пример проверки.xlsx'; wb = Workbook(); ws = wb.active
+        ws.append(['Код Автодокс', 'Наименование', 'Завод'])
+        ws.append(['DEMO-3', 'Панель ПКМ-ТСТ-3 ООО «Тестовый завод» IP66', ''])
+        wb.save(path); wb.close()
+        process_file(path, folder, OperatorExpertAnonymizer(store.snapshot(), auto_apply_confirmed=True), knowledge_store=store)
+        def descendants(widget):
+            for child in widget.winfo_children():
+                yield child
+                yield from descendants(child)
         def capture_start(root):
             capture(root, output / 'start.png')
+            resume = next(w for w in descendants(root) if w.winfo_class() == 'TButton' and w.cget('text') == 'Продолжить последнюю проверку')
+            resume.invoke(); root.update()
+            texts = [w for w in descendants(root) if w.winfo_class() == 'Text' and w.winfo_ismapped()]
+            original = next(w for w in texts if w.cget('state') == 'disabled')
+            final = next(w for w in texts if w.cget('state') == 'normal')
+            assert original.tag_ranges('deleted') and final.tag_ranges('restored')
+            final.insert('end-1c', ' в комплекте')
+            root.update(); time.sleep(.15); root.update()
+            assert final.tag_ranges('added')
+            capture(root, output / 'review.png')
             for timer in root.tk.call('after', 'info'):
                 root.after_cancel(timer)
             root.destroy()

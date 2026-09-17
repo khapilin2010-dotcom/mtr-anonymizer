@@ -107,12 +107,13 @@ def run():
     expert_checks = expert_smoke()
     exact_checks = exact_decision_smoke()
     selection_checks = selection_import_smoke()
+    learning_checks = learning_smoke()
     if sys.platform=='win32':
         import tkinter as tk
         root=tk.Tk();root.withdraw();root.update();root.destroy()
     assert not any(n in sys.modules for n in ('mtr_core','MTR_Obezlichivatel','fitz','pymupdf'))
     return {'result':'SELF_TEST_OK','version':VERSION,'frozen':bool(getattr(sys,'frozen',False)),
-            'selection_checks':selection_checks, 'exact_decision_checks':exact_checks, 'expert_checks':expert_checks,'database':'mtr_data.json.gz','database_sha256':hashlib.sha256(database_path().read_bytes()).hexdigest(),
+            'learning_checks':learning_checks, 'selection_checks':selection_checks, 'exact_decision_checks':exact_checks, 'expert_checks':expert_checks,'database':'mtr_data.json.gz','database_sha256':hashlib.sha256(database_path().read_bytes()).hexdigest(),
             'registry_count':len(az.registry),'formats':tested,'source_unchanged':True,
             'supplemental_sha256':supplemental_digest(),
             'reviewed_keep_count':len(REVIEWED_KEEP),
@@ -235,3 +236,33 @@ def selection_import_smoke():
                 root.destroy()
             checks += ['white_blue_theme', 'selection_dialog_preview_and_commit']
     return checks
+
+
+def learning_smoke():
+    """Learn from live engineer corrections using production store and engine."""
+    from excel.simple_store import SimpleKnowledgeStore
+    from excel.operator_engine import OperatorExpertAnonymizer
+    from excel.semantics import features
+    from excel.simple_review import refresh_review_row
+    from excel.review_display import change_spans, restored_spans
+    from excel.sync_feedback import feedback
+    with tempfile.TemporaryDirectory(prefix='MTR_Learning_') as tmp:
+        folder = Path(tmp)
+        store = SimpleKnowledgeStore(folder / 'local', folder / 'shared', 'engineer')
+        for index, family in enumerate(('МОС', 'ПКМ-ТСТ')):
+            source = 'Модуль ' + family + '-1'
+            row = dict(id=str(index), session='smoke', source=source, automatic='Модуль',
+                       code=str(index), factory='', classification=features(source))
+            store.decide(row, source, 'Оставить как в исходном')
+            following = dict(row, source='Модуль ' + family + '-2', code='new')
+            got = refresh_review_row(store, following)
+            assert got['automatic'] == following['source'], got
+            assert got['provenance']['series_kept'] == [family], got
+            assert change_spans(source, 'Модуль')[0]
+            assert restored_spans(source, 'Модуль', source)
+            store.sync(auto_backup=False)
+        peer = SimpleKnowledgeStore(folder / 'peer', store.shared, 'peer')
+        peer.sync(auto_backup=False)
+        assert OperatorExpertAnonymizer(peer.snapshot()).anonymize('Модуль МОС-3')['knowledge']['series_kept'] == ['МОС']
+        assert not feedback(store.shared, dict(online=False, pending=1, errors=['Нет доступа']))['ok']
+    return ['mos_and_pkm_series_learning', 'next_row_refresh', 'shared_learning', 'color_diff_spans', 'sync_diagnostics']
