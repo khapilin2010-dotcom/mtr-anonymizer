@@ -47,8 +47,8 @@ def run(app_dir, default_knowledge, version='', smoke=False):
 
     root = tk.Tk()
     root.title('MTR Excel — обезличивание')
-    root.geometry('1120x790')
-    root.minsize(940, 700)
+    root.geometry(f'{min(1120, root.winfo_screenwidth() - 40)}x{min(790, root.winfo_screenheight() - 100)}+10+10')
+    root.minsize(940, 640)
     apply_theme(root)
 
     state = {
@@ -67,6 +67,7 @@ def run(app_dir, default_knowledge, version='', smoke=False):
     row_info = tk.StringVar(value='')
     removed_info = tk.StringVar(value='')
 
+    footer = ttk.Frame(root); footer.pack(side='bottom', fill='x')
     header = ttk.Frame(root, padding=(18, 14, 18, 8), style='Header.TFrame'); header.pack(fill='x')
     ttk.Label(header, style='Header.TLabel', text='MTR Excel', font=('Segoe UI', 23, 'bold')).pack(side='left')
     ttk.Label(header, style='Header.TLabel', text=(version + ' • разработал Хапилин Виктор').strip(' •'),
@@ -77,9 +78,9 @@ def run(app_dir, default_knowledge, version='', smoke=False):
     review_frame = ttk.Frame(body)
     done_frame = ttk.Frame(body)
 
-    progress = ttk.Progressbar(root, mode='indeterminate')
+    progress = ttk.Progressbar(footer, mode='indeterminate')
     progress.pack(fill='x', padx=18)
-    ttk.Label(root, textvariable=status, wraplength=1060).pack(fill='x', padx=18, pady=(4, 10))
+    ttk.Label(footer, textvariable=status, wraplength=1060).pack(fill='x', padx=18, pady=(4, 10))
 
     def show(frame):
         for item in (process_frame, review_frame, done_frame):
@@ -213,15 +214,17 @@ def run(app_dir, default_knowledge, version='', smoke=False):
             os.startfile(str(folder))
 
     # ---- 1. file selection --------------------------------------------
+    process_controls = ttk.Frame(process_frame)
+    process_controls.pack(side='bottom', fill='x')
     ttk.Label(process_frame, text='1. Выберите файл', font=('Segoe UI', 17, 'bold')).pack(anchor='w')
     ttk.Label(process_frame,
               text='Программа создаст отдельный обезличенный Excel. Исходный файл останется без изменений.',
               font=('Segoe UI', 10)).pack(anchor='w', pady=(2, 10))
 
-    listbox = tk.Listbox(process_frame, **{k: v for k, v in text_colors().items() if k != 'insertbackground'}, height=7, selectmode='extended', font=('Segoe UI', 10))
+    listbox = tk.Listbox(process_frame, **{k: v for k, v in text_colors().items() if k != 'insertbackground'}, height=4, selectmode='extended', font=('Segoe UI', 10))
     listbox.pack(fill='both', expand=True)
 
-    filebar = ttk.Frame(process_frame); filebar.pack(fill='x', pady=7)
+    filebar = ttk.Frame(process_controls); filebar.pack(fill='x', pady=7)
 
     def add_files(paths):
         for raw in paths:
@@ -240,13 +243,13 @@ def run(app_dir, default_knowledge, version='', smoke=False):
 
     ttk.Button(filebar, text='Убрать выбранное', command=remove_selected).pack(side='left', padx=6)
 
-    location = ttk.LabelFrame(process_frame, text='Куда сохранить результат', padding=9)
+    location = ttk.LabelFrame(process_controls, text='Куда сохранить результат', padding=9)
     location.pack(fill='x', pady=(8, 4))
     ttk.Entry(location, textvariable=output_dir).pack(side='left', fill='x', expand=True)
     ttk.Button(location, text='Выбрать…', command=lambda: output_dir.set(
         filedialog.askdirectory(title='Папка результата') or output_dir.get())).pack(side='left', padx=(6, 0))
 
-    kb = ttk.LabelFrame(process_frame, text='База решений инженеров', padding=9)
+    kb = ttk.LabelFrame(process_controls, text='База решений инженеров', padding=9)
     kb.pack(fill='x', pady=(8, 3))
     kb_top = ttk.Frame(kb); kb_top.pack(fill='x')
     ttk.Label(kb_top, textvariable=knowledge_label, foreground=MUTED).pack(side='left', fill='x', expand=True)
@@ -318,7 +321,7 @@ def run(app_dir, default_knowledge, version='', smoke=False):
         status.set('Обезличиваю файл…')
         run_job(work, done)
 
-    ttk.Button(process_frame, text='Обезличить и проверить', style='Primary.TButton',
+    ttk.Button(process_controls, text='Обезличить и проверить', style='Primary.TButton',
                command=process_all).pack(fill='x', pady=(12, 4))
 
     def latest_session():
@@ -348,7 +351,7 @@ def run(app_dir, default_knowledge, version='', smoke=False):
         show(review_frame)
         render_current()
 
-    ttk.Button(process_frame, text='Продолжить последнюю проверку', command=latest_session).pack(fill='x')
+    ttk.Button(process_controls, text='Продолжить последнюю проверку', command=latest_session).pack(fill='x')
 
     # ---- 2. row review --------------------------------------------------
     top_review = ttk.Frame(review_frame); top_review.pack(fill='x')
@@ -358,13 +361,13 @@ def run(app_dir, default_knowledge, version='', smoke=False):
 
     source_box = ttk.LabelFrame(review_frame, text='Исходное наименование', padding=7)
     source_box.pack(fill='both', expand=True, pady=4)
-    source_text = tk.Text(source_box, **text_colors(), height=7, wrap='word', font=('Consolas', 10))
+    source_text = tk.Text(source_box, **text_colors(), height=4, wrap='word', font=('Consolas', 10))
     source_text.pack(fill='both', expand=True)
     source_text.configure(state='disabled')
 
     final_box = ttk.LabelFrame(review_frame, text='Результат — его можно исправить прямо здесь', padding=7)
     final_box.pack(fill='both', expand=True, pady=4)
-    final_text = tk.Text(final_box, **text_colors(), height=7, wrap='word', font=('Consolas', 10))
+    final_text = tk.Text(final_box, **text_colors(), height=4, wrap='word', font=('Consolas', 10))
     final_text.pack(fill='both', expand=True)
 
     ttk.Label(review_frame, textvariable=removed_info, wraplength=1040,

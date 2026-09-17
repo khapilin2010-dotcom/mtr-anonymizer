@@ -20,8 +20,16 @@ from excel.MTR_Excel import APP_VERSION
 
 def capture(widget, destination):
     widget.lift(); widget.update()
-    widget.after(250, lambda: None)
     time.sleep(0.3); widget.update()
+    assert widget.winfo_ismapped() and widget.winfo_width() > 800 and widget.winfo_height() > 600
+    def check_buttons(parent):
+        for child in parent.winfo_children():
+            if child.winfo_ismapped() and child.winfo_class() in ('TButton', 'TCheckbutton'):
+                assert child.winfo_height() >= child.winfo_reqheight(), str(child)
+                assert child.winfo_rooty() + child.winfo_height() <= widget.winfo_rooty() + widget.winfo_height(), str(child)
+                assert child.winfo_rootx() + child.winfo_width() <= widget.winfo_rootx() + widget.winfo_width(), str(child)
+            check_buttons(child)
+    check_buttons(widget)
     x, y = widget.winfo_rootx(), widget.winfo_rooty()
     image = ImageGrab.grab(bbox=(x, y, x + widget.winfo_width(), y + widget.winfo_height()))
     image.save(destination)
@@ -46,7 +54,7 @@ def main():
         ws.append(['631-336536', source, source, ''])
         ws.append(['000002', 'Клапан DN50 PN16', 'Клапан DN50 PN16', ''])
         wb.save(path); wb.close()
-        root = tk.Tk(); root.withdraw(); apply_theme(root)
+        root = tk.Tk(); root.geometry('1x1+0+0'); apply_theme(root); root.update()
         dialog = SelectionDialog(root, store, path)
         def idle():
             deadline = time.monotonic() + 20
