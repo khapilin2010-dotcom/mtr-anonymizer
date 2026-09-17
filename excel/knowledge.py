@@ -260,6 +260,17 @@ class KnowledgeStore:
         own = [e for e in contextual_events(self.events())
                if e['kind'] == 'case' and e['key'] == key
                and (e['user'] == self.user or getattr(self, 'replace_observed_cases', False))]
+        payload = self.decision_payload(row, final, action, own)
+        return self.emit(payload) if payload is not None else None
+
+    def decision_payload(self, row, final, action, own):
+        """Prepare a decision using only explicitly observed prior events.
+
+        Batch imports pass a pre-indexed history. Concurrent unseen changes are
+        never superseded, and remain visible as conflicts after synchronization.
+        """
+        final = str(final)
+        key = case_key(row.get('code', ''), row['source'], row.get('factory', ''))
         live = Snapshot.live(own, cross_user=getattr(self, 'replace_observed_cases', False))
         if live and all(e['value'] == final for e in live) and any(e['user'] == self.user for e in live) and not row.get('explicit_feedback'):
             return None  # Same user + same decision, even across sessions/imports.
@@ -267,11 +278,11 @@ class KnowledgeStore:
         original_deleted, _ = fragments(row['source'], final)
         from excel.semantics import feedback_facts, features
         classification = row.get('classification') or features(row['source'],row.get('factory',''))
-        return self.emit(dict(classification=classification,facts=feedback_facts(row,final,action,classification),batch_id=row.get('batch_id',''),kind='case', key=key, value=final, source=row['source'], code=row.get('code', ''),
+        return dict(classification=classification,facts=feedback_facts(row,final,action,classification),batch_id=row.get('batch_id',''),kind='case', key=key, value=final, source=row['source'], code=row.get('code', ''),
                               factory=row.get('factory', ''), automatic=row.get('automatic', ''),
                               row_id=row['id'], session=row['session'], action=action,
                               removed=removed, restored=restored, original_deleted=original_deleted,
-                              provenance=row.get('provenance', {}), supersedes=[e['id'] for e in own if e['user'] == self.user or e['value'] != final]))
+                              provenance=row.get('provenance', {}), supersedes=[e['id'] for e in own if e['user'] == self.user or e['value'] != final])
 
     def propose_rule(self, row, fragment, action, category, role='изделие'):
         scope = {'factory': normalize(row.get('factory', '')), 'category': normalize(category), 'role': role}

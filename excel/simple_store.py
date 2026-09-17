@@ -51,7 +51,9 @@ class SimpleKnowledgeStore(_KnowledgeStore):
         events = self.events()
         editors = {self.user}
         editors.update(e.get('user') for e in events if e.get('user'))
-        return SimpleSnapshot(events, sorted(editors))
+        snapshot = SimpleSnapshot(events, sorted(editors))
+        snapshot.observed_events = events
+        return snapshot
 
     def administrate(self, key, reason, **changes):
         """Allow knowledge edits to every engineer with write access to the folder.

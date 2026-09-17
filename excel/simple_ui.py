@@ -20,6 +20,8 @@ from excel.operator_engine import OperatorExpertAnonymizer
 from excel.output_update import apply_decisions
 from excel.simple_store import SimpleKnowledgeStore
 from excel.simple_review import build_review_queue
+from excel.theme import apply_theme, text_colors, MUTED
+from excel.history_import_ui import show_import_dialog
 
 
 def run(app_dir, default_knowledge, version='', smoke=False):
@@ -47,10 +49,7 @@ def run(app_dir, default_knowledge, version='', smoke=False):
     root.title('MTR Excel — обезличивание')
     root.geometry('1120x790')
     root.minsize(940, 700)
-    style = ttk.Style(root)
-    style.theme_use('clam')
-    style.configure('Big.TButton', padding=(14, 11), font=('Segoe UI', 10, 'bold'))
-    style.configure('Primary.TButton', padding=(16, 12), font=('Segoe UI', 11, 'bold'))
+    apply_theme(root)
 
     state = {
         'store': SimpleKnowledgeStore(app_dir) if config_path.exists() else SimpleKnowledgeStore(app_dir, configured),
@@ -68,9 +67,9 @@ def run(app_dir, default_knowledge, version='', smoke=False):
     row_info = tk.StringVar(value='')
     removed_info = tk.StringVar(value='')
 
-    header = ttk.Frame(root, padding=(18, 14, 18, 8)); header.pack(fill='x')
-    ttk.Label(header, text='MTR Excel', font=('Segoe UI', 23, 'bold')).pack(side='left')
-    ttk.Label(header, text=(version + ' • разработал Хапилин Виктор').strip(' •'),
+    header = ttk.Frame(root, padding=(18, 14, 18, 8), style='Header.TFrame'); header.pack(fill='x')
+    ttk.Label(header, style='Header.TLabel', text='MTR Excel', font=('Segoe UI', 23, 'bold')).pack(side='left')
+    ttk.Label(header, style='Header.TLabel', text=(version + ' • разработал Хапилин Виктор').strip(' •'),
               font=('Segoe UI', 9)).pack(side='right')
 
     body = ttk.Frame(root, padding=(18, 6, 18, 10)); body.pack(fill='both', expand=True)
@@ -136,6 +135,8 @@ def run(app_dir, default_knowledge, version='', smoke=False):
             messagebox.showerror('Не удалось подключить базу', str(exc), parent=root)
 
     def export_base():
+        if state['busy']:
+            return
         path = filedialog.asksaveasfilename(
             title='Выгрузить базу решений в Excel', defaultextension='.xlsx',
             filetypes=[('Excel', '*.xlsx')], initialfile='MTR_База_решений.xlsx')
@@ -157,6 +158,9 @@ def run(app_dir, default_knowledge, version='', smoke=False):
         run_job(work, done)
 
     def import_base():
+        if state['busy'] or any(state['decisions'].values()):
+            messagebox.showinfo('База решений', 'Сначала завершите текущую проверку.', parent=root)
+            return
         path = filedialog.askopenfilename(
             title='Загрузить исправленную базу', filetypes=[('Excel', '*.xlsx')])
         if not path:
@@ -191,6 +195,18 @@ def run(app_dir, default_knowledge, version='', smoke=False):
         status.set('Проверяю исправленную базу…')
         run_job(preview_work, preview_done)
 
+    def import_selection():
+        if state['busy'] or any(state['decisions'].values()):
+            messagebox.showinfo('База решений', 'Сначала завершите текущую проверку.', parent=root)
+            return
+        path = filedialog.askopenfilename(
+            title='Загрузить ранее обезличенную выборку',
+            filetypes=[('Excel / CSV', '*.xlsx *.xlsm *.xls *.csv')])
+        if path:
+            report = show_import_dialog(root, state['store'], path)
+            if report:
+                status.set(f"База пополнена: {report['accepted']} решений. Можно обрабатывать новые файлы.")
+
     def open_knowledge_folder():
         folder = Path(knowledge_label.get())
         if folder.exists() and hasattr(os, 'startfile'):
@@ -202,7 +218,7 @@ def run(app_dir, default_knowledge, version='', smoke=False):
               text='Программа создаст отдельный обезличенный Excel. Исходный файл останется без изменений.',
               font=('Segoe UI', 10)).pack(anchor='w', pady=(2, 10))
 
-    listbox = tk.Listbox(process_frame, height=8, selectmode='extended', font=('Segoe UI', 10))
+    listbox = tk.Listbox(process_frame, **{k: v for k, v in text_colors().items() if k != 'insertbackground'}, height=7, selectmode='extended', font=('Segoe UI', 10))
     listbox.pack(fill='both', expand=True)
 
     filebar = ttk.Frame(process_frame); filebar.pack(fill='x', pady=7)
@@ -233,12 +249,14 @@ def run(app_dir, default_knowledge, version='', smoke=False):
     kb = ttk.LabelFrame(process_frame, text='База решений инженеров', padding=9)
     kb.pack(fill='x', pady=(8, 3))
     kb_top = ttk.Frame(kb); kb_top.pack(fill='x')
-    ttk.Label(kb_top, textvariable=knowledge_label, foreground='#555555').pack(side='left', fill='x', expand=True)
+    ttk.Label(kb_top, textvariable=knowledge_label, foreground=MUTED).pack(side='left', fill='x', expand=True)
     ttk.Button(kb_top, text='Сменить папку…', command=choose_knowledge).pack(side='right')
     kb_buttons = ttk.Frame(kb); kb_buttons.pack(fill='x', pady=(6, 0))
     ttk.Button(kb_buttons, text='Выгрузить базу в Excel…', command=export_base).pack(side='left')
     ttk.Button(kb_buttons, text='Загрузить исправленную базу…', command=import_base).pack(side='left', padx=6)
     ttk.Button(kb_buttons, text='Открыть папку базы', command=open_knowledge_folder).pack(side='left')
+
+    ttk.Button(kb, text='Загрузить ранее обезличенную выборку…', command=import_selection).pack(anchor='w', pady=(8, 0))
 
     def build_queue(session_ids):
         return build_review_queue(state['store'], session_ids, base)
@@ -336,17 +354,17 @@ def run(app_dir, default_knowledge, version='', smoke=False):
     top_review = ttk.Frame(review_frame); top_review.pack(fill='x')
     ttk.Label(top_review, text='2. Проверьте результат', font=('Segoe UI', 17, 'bold')).pack(side='left')
     ttk.Label(top_review, textvariable=counter, font=('Segoe UI', 11, 'bold')).pack(side='right')
-    ttk.Label(review_frame, textvariable=row_info, foreground='#555555').pack(anchor='w', pady=(3, 8))
+    ttk.Label(review_frame, textvariable=row_info, foreground=MUTED).pack(anchor='w', pady=(3, 8))
 
     source_box = ttk.LabelFrame(review_frame, text='Исходное наименование', padding=7)
     source_box.pack(fill='both', expand=True, pady=4)
-    source_text = tk.Text(source_box, height=7, wrap='word', font=('Consolas', 10))
+    source_text = tk.Text(source_box, **text_colors(), height=7, wrap='word', font=('Consolas', 10))
     source_text.pack(fill='both', expand=True)
     source_text.configure(state='disabled')
 
     final_box = ttk.LabelFrame(review_frame, text='Результат — его можно исправить прямо здесь', padding=7)
     final_box.pack(fill='both', expand=True, pady=4)
-    final_text = tk.Text(final_box, height=7, wrap='word', font=('Consolas', 10))
+    final_text = tk.Text(final_box, **text_colors(), height=7, wrap='word', font=('Consolas', 10))
     final_text.pack(fill='both', expand=True)
 
     ttk.Label(review_frame, textvariable=removed_info, wraplength=1040,

@@ -37,7 +37,7 @@ def header_candidates(path):
     result = []
     if suffix in ('.xlsx', '.xlsm'):
         from openpyxl import load_workbook
-        wb = load_workbook(path, read_only=True, data_only=False, keep_vba=suffix == '.xlsm')
+        wb = load_workbook(path, read_only=True, data_only=False)
         try:
             for ws in wb.worksheets:
                 for row_no, cells in enumerate(ws.iter_rows(max_row=min(30, ws.max_row)), 1):
@@ -80,11 +80,15 @@ def guess_mapping(headers):
     }
     normalized = [' '.join(str(x).casefold().replace('ё', 'е').split()) for x in headers]
     result = {'code': None, 'source': None, 'factory': None, 'final': None}
-    for key, names in aliases.items():
-        for i, value in enumerate(normalized):
-            if any(value == n or n in value for n in names):
-                result[key] = i
-                break
+    # Match semantic names before generic "наименование", irrespective of column order.
+    used = set()
+    for key in ('final', 'source', 'code', 'factory'):
+        names = aliases[key]
+        matches = [(int(value != name), rank, i) for rank, name in enumerate(names)
+                   for i, value in enumerate(normalized) if i not in used and name in value]
+        if matches:
+            result[key] = min(matches)[2]
+            used.add(result[key])
     return result
 
 
@@ -94,7 +98,7 @@ def _iter_mapped(path, candidate, mapping):
     sheet_name, header_row = candidate['sheet'], int(candidate['row'])
     if suffix in ('.xlsx', '.xlsm'):
         from openpyxl import load_workbook
-        wb = load_workbook(path, read_only=True, data_only=False, keep_vba=suffix == '.xlsm')
+        wb = load_workbook(path, read_only=True, data_only=False)
         try:
             if sheet_name not in wb.sheetnames:
                 raise ValueError('Выбранный лист больше не найден.')

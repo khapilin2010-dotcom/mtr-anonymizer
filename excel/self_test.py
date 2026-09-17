@@ -106,12 +106,13 @@ def run():
             tested.append(suffix)
     expert_checks = expert_smoke()
     exact_checks = exact_decision_smoke()
+    selection_checks = selection_import_smoke()
     if sys.platform=='win32':
         import tkinter as tk
         root=tk.Tk();root.withdraw();root.update();root.destroy()
     assert not any(n in sys.modules for n in ('mtr_core','MTR_Obezlichivatel','fitz','pymupdf'))
     return {'result':'SELF_TEST_OK','version':VERSION,'frozen':bool(getattr(sys,'frozen',False)),
-            'exact_decision_checks':exact_checks, 'expert_checks':expert_checks,'database':'mtr_data.json.gz','database_sha256':hashlib.sha256(database_path().read_bytes()).hexdigest(),
+            'selection_checks':selection_checks, 'exact_decision_checks':exact_checks, 'expert_checks':expert_checks,'database':'mtr_data.json.gz','database_sha256':hashlib.sha256(database_path().read_bytes()).hexdigest(),
             'registry_count':len(az.registry),'formats':tested,'source_unchanged':True,
             'supplemental_sha256':supplemental_digest(),
             'reviewed_keep_count':len(REVIEWED_KEEP),
@@ -164,3 +165,73 @@ def exact_decision_smoke():
             assert simple_ui(root / 'ui', root / 'UI база', smoke=True)
     return ['mos_keep_original', 'repeat_output', 'changed_source_review', 'excel_edit_import',
             'disable_decision', 'recover_before_skip', 'original_unchanged'] + (['simple_ui'] if sys.platform == 'win32' else [])
+
+
+def selection_import_smoke():
+    """Verify the new import path and its actual Tk dialog inside the EXE."""
+    from openpyxl import Workbook
+    from excel.simple_store import SimpleKnowledgeStore
+    from excel.history_import import preview_selection, commit_selection
+    from excel.mapped_import import header_candidates, guess_mapping
+    from excel.operator_engine import OperatorExpertAnonymizer
+    source = 'Модуль автоматизированной технологической обвязки скважин МОС-3/1 Чертеж МОС-29.М1'
+    checks = ['selection_import', 'selection_repeat', 'selection_conflict', 'selection_source_unchanged']
+    with tempfile.TemporaryDirectory(prefix='MTR_Selection_') as tmp:
+        folder = Path(tmp)
+        store = SimpleKnowledgeStore(folder / 'local', folder / 'shared', 'engineer')
+        path = folder / 'Проверенная выборка.xlsx'
+        wb = Workbook(); ws = wb.active
+        ws.append(['Код Автодокс', 'Исходное наименование', 'Обезличенное наименование', 'Завод'])
+        ws.append(['00001', source, source, '']); wb.save(path); wb.close()
+        before = path.read_bytes()
+        candidate = header_candidates(path)[0]; mapping = guess_mapping(candidate['headers'])
+        plan = preview_selection(path, store, candidate, mapping)
+        assert commit_selection(path, store, plan)['accepted'] == 1
+        repeated = preview_selection(path, store, candidate, mapping)
+        assert repeated['repeated'] == 1 and repeated['ready'] == 0
+        assert OperatorExpertAnonymizer(store.snapshot()).anonymize(source, '00001')['text'] == source
+        assert path.read_bytes() == before
+        ws.cell(2, 3, source + ' в комплекте'); wb.save(path); wb.close()
+        plan = preview_selection(path, store, candidate, mapping)
+        assert plan['conflicts'] == 1
+        assert commit_selection(path, store, plan)['accepted'] == 0
+        if sys.platform == 'win32':
+            import time
+            import tkinter as tk
+            from tkinter import ttk, messagebox
+            from excel.theme import apply_theme, WHITE, BLUE
+            from excel.history_import_ui import SelectionDialog
+            root = tk.Tk(); root.withdraw()
+            style = apply_theme(root)
+            assert style.lookup('TFrame', 'background') == WHITE
+            assert style.lookup('Primary.TButton', 'background') == BLUE
+            dialog = SelectionDialog(root, store, path)
+            def idle():
+                deadline = time.monotonic() + 20
+                while dialog.busy and time.monotonic() < deadline:
+                    root.update(); time.sleep(0.01)
+                assert not dialog.busy, 'Import dialog worker did not finish'
+                root.update()
+            old_info, old_error = messagebox.showinfo, messagebox.showerror
+            errors = []
+            messagebox.showinfo = lambda *a, **k: None
+            messagebox.showerror = lambda *a, **k: errors.append(a)
+            try:
+                idle(); assert not errors, errors
+                dialog.preview(); idle(); assert not errors, errors
+                assert dialog.plan['conflicts'] == 1
+                key = dialog.plan['plan'][0]['key']
+                dialog.rows.selection_set(key); root.update(); dialog.show_selected()
+                assert dialog.commit_button.instate(['disabled'])
+                dialog.take.set(True); dialog.toggle()
+                dialog.reviewed.set(True); dialog.update_commit()
+                assert not dialog.commit_button.instate(['disabled'])
+                dialog.commit(); idle(); assert not errors, errors
+                assert dialog.report['accepted'] == 1
+                assert OperatorExpertAnonymizer(store.snapshot()).anonymize(source, '00001')['text'] == source + ' в комплекте'
+                dialog.close()
+            finally:
+                messagebox.showinfo, messagebox.showerror = old_info, old_error
+                root.destroy()
+            checks += ['white_blue_theme', 'selection_dialog_preview_and_commit']
+    return checks
