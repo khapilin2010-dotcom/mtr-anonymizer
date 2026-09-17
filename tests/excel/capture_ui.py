@@ -1,5 +1,7 @@
 """Capture the real Windows Tk screens for release review (not a UI mockup)."""
 from pathlib import Path
+from contextlib import ExitStack
+import logging
 import sys
 import tempfile
 import time
@@ -27,10 +29,13 @@ def capture(widget, destination):
 
 def main():
     output = Path('ui-preview'); output.mkdir(exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix='MTR_UI_') as tmp:
+    with tempfile.TemporaryDirectory(prefix='MTR_UI_') as tmp, ExitStack() as cleanup:
+        cleanup.callback(logging.shutdown)
         folder = Path(tmp)
         def capture_start(root):
             capture(root, output / 'start.png')
+            for timer in root.tk.call('after', 'info'):
+                root.after_cancel(timer)
             root.destroy()
         with patch.object(tk.Tk, 'mainloop', capture_start):
             run(folder / 'local', folder / 'База решений', APP_VERSION)

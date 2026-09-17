@@ -546,6 +546,8 @@ def run(app_dir, default_knowledge, version='', smoke=False):
         for frame in (process_frame, review_frame, done_frame):
             show(frame)
             root.update()
+        for timer in root.tk.call('after', 'info'):
+            root.after_cancel(timer)
         root.destroy()
         return True
     root.mainloop()
