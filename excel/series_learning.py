@@ -6,7 +6,7 @@ are derived from live exact decisions and can be disabled through base export.
 from collections import defaultdict
 import re
 
-from excel.knowledge import contextual_events, digest, Snapshot
+from excel.knowledge import contextual_events, digest, Snapshot, code_key
 from excel.semantics import folded, factory_key, features, words, STOP
 
 LETTER = 'A-Za-zА-Яа-яЁё'
@@ -99,6 +99,7 @@ def derived_events(events, admins):
                 derived.append(dict(event, id=event['id'] + ':series:' + digest(rule_key)[:12],
                                     key=rule_key, kind='rule', value=action, fragment=family,
                                     scope=scope, series_rule=True, origin_event=event['id'], origin_case=key,
+                                    confirmation_case=('code:' + code_key(event.get('code', ''))) if code_key(event.get('code', '')) else key,
                                     classification='серия', example=source, supersedes=[]))
     return derived
 

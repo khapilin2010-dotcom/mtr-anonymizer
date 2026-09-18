@@ -141,3 +141,10 @@ def test_resume_rc4_rows_recomputes_even_if_database_version_unchanged(store,bas
              provenance=dict(version=store.snapshot().version,series_rules=['old']))
     updated=refresh_review_row(store,old,base)
     assert updated['provenance']['auto_reviewed']
+
+
+def test_three_versions_of_same_code_count_as_one_position(store,base):
+    for n in (1,2,3):confirm(store,base,1,source=f'Панель ПКМ-ТСТ-{n}')
+    got=engine(store,base).anonymize('Панель ПКМ-ТСТ-4','4')
+    assert got['knowledge']['series_confirmations']=={'ПКМ-ТСТ':1}
+    assert not got['knowledge'].get('auto_reviewed')

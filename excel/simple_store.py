@@ -25,7 +25,7 @@ class SimpleSnapshot(Snapshot):
         from excel.semantics import folded
         for entry in self.entries.values():
             if entry['sample'].get('series_rule'):
-                entry['case_confirmations'] = len({e['origin_case'] for e in entry['live'] if e['value'] == 'KEEP' and e.get('origin_case')})
+                entry['case_confirmations'] = len({e.get('confirmation_case', e['origin_case']) for e in entry['live'] if e['value'] == 'KEEP' and e.get('origin_case')})
                 self.series_index[folded(entry['sample']['fragment'])].append(entry)
             if (entry['sample'].get('series_rule') and entry['value'] == 'KEEP'
                     and entry['status'] == 'CANDIDATE'
