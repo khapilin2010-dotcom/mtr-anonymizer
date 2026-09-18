@@ -104,14 +104,206 @@ def run():
             assert values[4]==f'Клапан {keep}',values[4]
             assert values[6]
             tested.append(suffix)
+    import gc
     expert_checks = expert_smoke()
+    gc.collect()
+    exact_checks = exact_decision_smoke()
+    gc.collect()
+    selection_checks = selection_import_smoke()
+    learning_checks = learning_smoke()
+    review_checks = automatic_review_smoke()
     if sys.platform=='win32':
         import tkinter as tk
         root=tk.Tk();root.withdraw();root.update();root.destroy()
     assert not any(n in sys.modules for n in ('mtr_core','MTR_Obezlichivatel','fitz','pymupdf'))
     return {'result':'SELF_TEST_OK','version':VERSION,'frozen':bool(getattr(sys,'frozen',False)),
-            'expert_checks':expert_checks,'database':'mtr_data.json.gz','database_sha256':hashlib.sha256(database_path().read_bytes()).hexdigest(),
+            'review_checks':review_checks, 'learning_checks':learning_checks, 'selection_checks':selection_checks, 'exact_decision_checks':exact_checks, 'expert_checks':expert_checks,'database':'mtr_data.json.gz','database_sha256':hashlib.sha256(database_path().read_bytes()).hexdigest(),
             'registry_count':len(az.registry),'formats':tested,'source_unchanged':True,
             'supplemental_sha256':supplemental_digest(),
             'reviewed_keep_count':len(REVIEWED_KEEP),
             'supplemental_rule_count':len(EXTRA_RULES) + len(EXTRA_GLOBAL_RULES)}
+
+def exact_decision_smoke():
+    """Exercise the production decision path inside the frozen Windows EXE."""
+    from openpyxl import Workbook, load_workbook
+    from excel.simple_store import SimpleKnowledgeStore
+    from excel.operator_engine import OperatorExpertAnonymizer
+    from excel.simple_review import build_review_queue
+    from excel.knowledge import case_key
+    from excel.knowledge_edit_io import export_editable, commit_editable
+    from excel.file_io import HEADERS
+    source = 'Модуль автоматизированной технологической обвязки скважин МОС-3/1 Чертеж МОС-29.М1'
+    with tempfile.TemporaryDirectory(prefix='MTR_Exact_') as tmp:
+        root = Path(tmp)
+        store = SimpleKnowledgeStore(root / 'local', root / 'База', 'engineer')
+        src = root / 'Исходный Excel.xlsx'; wb = Workbook(); ws = wb.active
+        ws.append(['Код Автодокс', 'Наименование', 'Завод'])
+        ws.append(['631-336536', source, ''])
+        wb.save(src); wb.close(); before = src.read_bytes()
+        out, report = process_file(src, root, OperatorExpertAnonymizer(store.snapshot()), knowledge_store=store)
+        row = store.session_rows(report['session'])[0]
+        store.decide(row, source, 'Оставить как в исходном')
+        assert build_review_queue(store, [report['session']]) == []
+        def final_value(path):
+            wb = load_workbook(path); ws = wb.active
+            value = ws.cell(2, [c.value for c in ws[1]].index(HEADERS[1]) + 1).value
+            wb.close(); return value
+        assert final_value(out) == source
+        repeated, _ = process_file(src, root, OperatorExpertAnonymizer(store.snapshot()), knowledge_store=store)
+        assert final_value(repeated) == source
+        changed = OperatorExpertAnonymizer(store.snapshot()).anonymize(source + ' другой', row['code'])
+        assert not changed['knowledge'].get('exact_applied') and changed['status'] == 'ЖЁЛТЫЙ'
+        export = root / 'База.xlsx'; export_editable(export, store)
+        wb = load_workbook(export); ws = wb['Управление']; cols = {c.value: c.column for c in ws[1]}
+        key = case_key(row['code'], source)
+        n = next(i for i in range(2, ws.max_row + 1) if ws.cell(i, cols['Ключ']).value == key)
+        ws.cell(n, cols['Новое решение'], source + ' проверено')
+        ws.cell(n, cols['Действие'], 'ИЗМЕНИТЬ'); ws.cell(n, cols['Причина изменения'], 'Проверка EXE')
+        wb.save(export); wb.close()
+        assert commit_editable(export, store)['applied'] == 1
+        assert OperatorExpertAnonymizer(store.snapshot()).anonymize(source, row['code'])['text'] == source + ' проверено'
+        store.control(key, True, 'Проверка отключения')
+        assert not OperatorExpertAnonymizer(store.snapshot()).anonymize(source, row['code'])['knowledge'].get('exact_applied')
+        assert src.read_bytes() == before
+        if sys.platform == 'win32':
+            from excel.simple_ui import run as simple_ui
+            assert simple_ui(root / 'ui', root / 'UI база', smoke=True)
+    return ['mos_keep_original', 'repeat_output', 'changed_source_review', 'excel_edit_import',
+            'disable_decision', 'recover_before_skip', 'original_unchanged'] + (['simple_ui'] if sys.platform == 'win32' else [])
+
+
+def selection_import_smoke():
+    """Verify the new import path and its actual Tk dialog inside the EXE."""
+    from openpyxl import Workbook
+    from excel.simple_store import SimpleKnowledgeStore
+    from excel.history_import import preview_selection, commit_selection
+    from excel.mapped_import import header_candidates, guess_mapping
+    from excel.operator_engine import OperatorExpertAnonymizer
+    source = 'Модуль автоматизированной технологической обвязки скважин МОС-3/1 Чертеж МОС-29.М1'
+    checks = ['selection_import', 'selection_repeat', 'selection_conflict', 'selection_source_unchanged']
+    with tempfile.TemporaryDirectory(prefix='MTR_Selection_') as tmp:
+        folder = Path(tmp)
+        store = SimpleKnowledgeStore(folder / 'local', folder / 'shared', 'engineer')
+        path = folder / 'Проверенная выборка.xlsx'
+        wb = Workbook(); ws = wb.active
+        ws.append(['Код Автодокс', 'Исходное наименование', 'Обезличенное наименование', 'Завод'])
+        ws.append(['00001', source, source, '']); wb.save(path); wb.close()
+        before = path.read_bytes()
+        candidate = header_candidates(path)[0]; mapping = guess_mapping(candidate['headers'])
+        plan = preview_selection(path, store, candidate, mapping)
+        assert commit_selection(path, store, plan)['accepted'] == 1
+        repeated = preview_selection(path, store, candidate, mapping)
+        assert repeated['repeated'] == 1 and repeated['ready'] == 0
+        assert OperatorExpertAnonymizer(store.snapshot()).anonymize(source, '00001')['text'] == source
+        assert path.read_bytes() == before
+        ws.cell(2, 3, source + ' в комплекте'); wb.save(path); wb.close()
+        plan = preview_selection(path, store, candidate, mapping)
+        assert plan['conflicts'] == 1
+        assert commit_selection(path, store, plan)['accepted'] == 0
+        if sys.platform == 'win32':
+            import time
+            import tkinter as tk
+            from tkinter import ttk, messagebox
+            from excel.theme import apply_theme, WHITE, BLUE
+            from excel.history_import_ui import SelectionDialog
+            root = tk.Tk(); root.withdraw()
+            style = apply_theme(root)
+            assert style.lookup('TFrame', 'background') == WHITE
+            assert style.lookup('Primary.TButton', 'background') == BLUE
+            dialog = SelectionDialog(root, store, path)
+            def idle():
+                deadline = time.monotonic() + 20
+                while dialog.busy and time.monotonic() < deadline:
+                    root.update(); time.sleep(0.01)
+                assert not dialog.busy, 'Import dialog worker did not finish'
+                root.update()
+            old_info, old_error = messagebox.showinfo, messagebox.showerror
+            errors = []
+            messagebox.showinfo = lambda *a, **k: None
+            messagebox.showerror = lambda *a, **k: errors.append(a)
+            try:
+                idle(); assert not errors, errors
+                dialog.preview(); idle(); assert not errors, errors
+                assert dialog.plan['conflicts'] == 1
+                key = dialog.plan['plan'][0]['key']
+                dialog.rows.selection_set(key); root.update(); dialog.show_selected()
+                assert dialog.commit_button.instate(['disabled'])
+                dialog.take.set(True); dialog.toggle()
+                dialog.reviewed.set(True); dialog.update_commit()
+                assert not dialog.commit_button.instate(['disabled'])
+                dialog.commit(); idle(); assert not errors, errors
+                assert dialog.report['accepted'] == 1
+                assert OperatorExpertAnonymizer(store.snapshot()).anonymize(source, '00001')['text'] == source + ' в комплекте'
+                dialog.close()
+            finally:
+                messagebox.showinfo, messagebox.showerror = old_info, old_error
+                root.destroy()
+            checks += ['white_blue_theme', 'selection_dialog_preview_and_commit']
+    return checks
+
+
+def learning_smoke():
+    """Learn from live engineer corrections using production store and engine."""
+    from excel.simple_store import SimpleKnowledgeStore
+    from excel.operator_engine import OperatorExpertAnonymizer
+    from excel.semantics import features
+    from excel.simple_review import refresh_review_row
+    from excel.review_display import change_spans, restored_spans
+    from excel.sync_feedback import feedback
+    with tempfile.TemporaryDirectory(prefix='MTR_Learning_') as tmp:
+        folder = Path(tmp)
+        store = SimpleKnowledgeStore(folder / 'local', folder / 'shared', 'engineer')
+        for index, family in enumerate(('МОС', 'ПКМ-ТСТ')):
+            source = 'Модуль ' + family + '-1'
+            row = dict(id=str(index), session='smoke', source=source, automatic='Модуль',
+                       code=str(index), factory='', classification=features(source))
+            store.decide(row, source, 'Оставить как в исходном')
+            following = dict(row, source='Модуль ' + family + '-2', code='new')
+            got = refresh_review_row(store, following)
+            assert got['automatic'] == following['source'], got
+            assert got['provenance']['series_kept'] == [family], got
+            assert change_spans(source, 'Модуль')[0]
+            assert restored_spans(source, 'Модуль', source)
+            store.sync(auto_backup=False)
+        peer = SimpleKnowledgeStore(folder / 'peer', store.shared, 'peer')
+        peer.sync(auto_backup=False)
+        assert OperatorExpertAnonymizer(peer.snapshot()).anonymize('Модуль МОС-3')['knowledge']['series_kept'] == ['МОС']
+        assert not feedback(store.shared, dict(online=False, pending=1, errors=['Нет доступа']))['ok']
+    return ['mos_and_pkm_series_learning', 'next_row_refresh', 'shared_learning', 'color_diff_spans', 'sync_diagnostics']
+
+
+def automatic_review_smoke():
+    """Exercise RC5 threshold, automatic output and text restoration in the EXE."""
+    from excel.simple_store import SimpleKnowledgeStore
+    from excel.operator_engine import OperatorExpertAnonymizer
+    from excel.simple_review import build_review_queue, advance_review_queue
+    from excel.review_display import restore_deleted
+    from openpyxl import Workbook, load_workbook
+    from excel.file_io import HEADERS
+    with tempfile.TemporaryDirectory(prefix='MTR_RC5_') as tmp:
+        folder = Path(tmp)
+        store = SimpleKnowledgeStore(folder / 'local', folder / 'base', 'engineer')
+        src = folder / 'Вход.xlsx'; wb = Workbook(); ws = wb.active
+        ws.append(['Код Автодокс', 'Наименование', 'Завод'])
+        for n in range(1, 6):
+            ws.append([str(n), f'Панель ПКМ-ТСТ-{n} по типу ТУ 1234-567-2020', ''])
+        wb.save(src); wb.close(); before = src.read_bytes()
+        base = Anonymizer()
+        out, report = process_file(src, folder, OperatorExpertAnonymizer(store.snapshot(), base, True), knowledge_store=store)
+        rows = build_review_queue(store, [report['session']], base)
+        for n in range(3):
+            assert advance_review_queue(store, rows, n, base) == n
+            store.decide(rows[n], f'Панель ПКМ-ТСТ-{n+1}', 'Исправить')
+        event_count = len(store.events())
+        assert advance_review_queue(store, rows, 3, base) == 5
+        assert len(store.events()) == event_count
+        assert build_review_queue(store, [report['session']], base) == []
+        wb = load_workbook(out); ws = wb.active
+        col = [c.value for c in ws[1]].index(HEADERS[1]) + 1
+        assert [ws.cell(n+1, col).value for n in range(1, 6)] == [f'Панель ПКМ-ТСТ-{n}' for n in range(1, 6)]
+        wb.close(); assert src.read_bytes() == before
+        source = 'Панель ПКМ-ТСТ-1 ТУ 1234 IP66'
+        restored = restore_deleted(source, 'Панель IP66 в комплекте', (7, 16))
+        assert restored == 'Панель ПКМ-ТСТ-1 IP66 в комплекте', restored
+        assert restore_deleted(source, restored) == source + ' в комплекте'
+    return ['three_distinct_cases', 'skip_tu_only', 'write_before_skip', 'no_self_training', 'restore_selected', 'restore_all']

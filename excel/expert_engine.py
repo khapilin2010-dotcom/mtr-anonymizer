@@ -16,7 +16,7 @@ class ExpertAnonymizer:
         self.snapshot=snapshot;self.base=base or Anonymizer();self.version=self.base.version
         self.product_rules=defaultdict(list);self.component_rules=defaultdict(list);self.global_protected=[]
         for e in snapshot.entries.values():
-            if e['kind']!='rule':continue
+            if e['kind']!='rule' or e['sample'].get('series_rule'):continue
             scope=e['sample']['scope'];factory=scope['factory']
             if factory=='*' and e['sample'].get('protected'):self.global_protected.append(e);continue
             keys={factory_key(factory)};_,inn=self.base.resolve_factory('',factory)
@@ -50,7 +50,7 @@ class ExpertAnonymizer:
             if (e['value']=='KEEP' and present<len(spans)) or (e['value']=='DELETE' and present):conflicts.append(e['value']+' / '+e['sample']['fragment'])
         if self.snapshot.settings_conflict:conflicts.append('Конфликт настроек доверия')
         return list(dict.fromkeys(conflicts)),matches,extra
-    def anonymize(self,name,code='',factory=''):
+    def anonymize(self,name,code='',factory='',*,extra_keeps=()):
         source=str(name or '');info=features(source,factory,code,self.base);entry=self.snapshot.entries.get(case_key(code,source,factory))
         matches=self.matching_rules(source,info)
         extra=[span for e,spans in matches if e['sample'].get('protected') and e['value']=='KEEP' and e['status'] in ('ACTIVE','TRUSTED') for span in spans]
@@ -61,7 +61,7 @@ class ExpertAnonymizer:
             conflicts,_,_=self.assess(source,entry['value'],code,factory,info)
             return self.conflict(result,'; '.join(conflicts)) if conflicts else result
         disabled=self.snapshot.static_disabled
-        result=self.base.anonymize(source,code,factory,disabled_rules=disabled);result['classification']=info
+        result=self.base.anonymize(source,code,factory,disabled_rules=disabled,expert_keeps=extra_keeps);result['classification']=info
         result['knowledge']=dict(version=self.snapshot.version,source='Статическая база',status='LEGACY',events=[],score=None)
         if entry and entry['status']!='DISABLED':
             self.describe(result,entry,'Код Автодокс' if str(code).strip() else 'Точное наименование и завод')
@@ -69,8 +69,8 @@ class ExpertAnonymizer:
             if entry['status'] in ('ACTIVE','TRUSTED'):
                 result['knowledge']['proposed']=entry['value'];losses=protection_losses(source,entry['value'],self.base,code,factory,extra)
                 return self.conflict(result,'Решение удаляет защищённые признаки: '+', '.join(losses) if losses else 'Экспертное наименование пустое')
-        keeps=list(extra);deletes=[];applied=[];conflicts=[]
-        protect=protected_ranges(source)+extra;_,identity=self.base.resolve_factory(code,factory)
+        keeps=list(extra)+list(extra_keeps);deletes=[];applied=[];conflicts=[]
+        protect=protected_ranges(source)+extra+list(extra_keeps);_,identity=self.base.resolve_factory(code,factory)
         if identity==AERO_INN or AERO_NAME_RE.search(source):protect+=aero_designation_ranges(source)
         for e,spans in matches:
             if e['status']=='DISPUTED':conflicts.append('Спорное правило: '+e['sample']['fragment']);continue
