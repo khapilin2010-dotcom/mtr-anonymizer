@@ -19,8 +19,8 @@ from excel.knowledge_edit_io import export_editable, preview_editable, commit_ed
 from excel.operator_engine import OperatorExpertAnonymizer
 from excel.output_update import apply_decisions
 from excel.simple_store import SimpleKnowledgeStore
-from excel.simple_review import build_review_queue, refresh_review_row
-from excel.review_display import change_spans, restored_spans
+from excel.simple_review import build_review_queue, advance_review_queue
+from excel.review_display import change_spans, restored_spans, restore_deleted
 from excel.sync_feedback import feedback
 from excel.theme import apply_theme, text_colors, MUTED
 from excel.history_import_ui import show_import_dialog
@@ -369,6 +369,7 @@ def run(app_dir, default_knowledge, version='', smoke=False):
         if not queue_rows:
             messagebox.showinfo('Проверка', 'В последней обработке нет непринятых решений.', parent=root)
             return
+        status.set(f'Продолжение проверки: {len(queue_rows)} строк.')
         show(review_frame)
         render_current()
 
@@ -384,7 +385,12 @@ def run(app_dir, default_knowledge, version='', smoke=False):
 
     source_box = ttk.LabelFrame(review_frame, text='Исходное наименование', padding=7)
     source_box.pack(fill='both', expand=True, pady=4)
-    source_text = tk.Text(source_box, **text_colors(), height=4, wrap='word', font=('Consolas', 10))
+    restore_bar = ttk.Frame(source_box); restore_bar.pack(side='bottom', fill='x', pady=(5, 0))
+    restore_selection_button = ttk.Button(restore_bar, text='Оставить выделенное')
+    restore_selection_button.pack(side='left')
+    restore_all_button = ttk.Button(restore_bar, text='Оставить всё удалённое')
+    restore_all_button.pack(side='left', padx=6)
+    source_text = tk.Text(source_box, **text_colors(), exportselection=False, height=4, wrap='word', font=('Consolas', 10))
     source_text.pack(fill='both', expand=True)
     source_text.tag_configure('deleted', background='#FFD8D8', foreground='#8A1616')
     source_text.configure(state='disabled')
@@ -438,6 +444,27 @@ def run(app_dir, default_knowledge, version='', smoke=False):
                 widget.tag_add(tag, f'1.0+{start}c', f'1.0+{end}c')
         removed_info.set('Будет удалено: ' + ('; '.join(source[a:b].strip() for a, b in deleted) or 'ничего'))
 
+    def restore_from_source(all_deleted=False):
+        if state['busy'] or not state['current']:
+            return
+        selection = None
+        if not all_deleted:
+            if not source_text.tag_ranges('sel'):
+                status.set('Выделите в верхнем окне красный фрагмент, который нужно оставить.')
+                return
+            selection = (len(source_text.get('1.0', 'sel.first')), len(source_text.get('1.0', 'sel.last')))
+        before = final_text.get('1.0', 'end-1c')
+        after = restore_deleted(state['current']['source'], before, selection)
+        if after == before:
+            status.set('В выделении нет удалённого текста.' if selection else 'Удалённых фрагментов нет.')
+            return
+        set_text(final_text, after)
+        highlight_changes()
+        status.set('Фрагмент возвращён в результат. Проверьте текст и нажмите «Сохранить моё исправление».')
+
+    restore_selection_button.configure(command=restore_from_source)
+    restore_all_button.configure(command=lambda: restore_from_source(True))
+
     def editor_changed(_event=None):
         if final_text.edit_modified():
             final_text.edit_modified(False)
@@ -448,11 +475,18 @@ def run(app_dir, default_knowledge, version='', smoke=False):
     final_text.bind('<<Modified>>', editor_changed)
 
     def render_current():
+        try:
+            state['index'] = advance_review_queue(state['store'], state['queue'], state['index'], base)
+        except Exception as exc:
+            state['current'] = None
+            status.set('Автоматический результат не записан. Строки остаются на проверке.')
+            messagebox.showerror('Не удалось сохранить результат', str(exc), parent=root)
+            return
         if not state['queue'] or state['index'] >= len(state['queue']):
+            state['current'] = None
             finish_review()
             return
-        row = refresh_review_row(state['store'], state['queue'][state['index']], base)
-        state['queue'][state['index']] = row
+        row = state['queue'][state['index']]
         state['current'] = row
         counter.set(f"{state['index'] + 1} из {len(state['queue'])}")
         code = row.get('code', '') or 'без кода'
@@ -463,7 +497,7 @@ def run(app_dir, default_knowledge, version='', smoke=False):
         set_text(final_text, row.get('automatic', ''))
         knowledge = row.get('provenance', {})
         learned_info.set(('Требуется проверка: противоречивые решения по обозначению.' if knowledge.get('series_conflicts') else
-                          'По решениям инженера сохранено: ' + ', '.join(knowledge['series_kept']))
+                          'По решениям инженера сохранено: ' + ', '.join(f"{label} ({min(3, knowledge.get('series_confirmations', {}).get(label, 0))}/3)" for label in knowledge['series_kept']))
                          if knowledge.get('series_conflicts') or knowledge.get('series_kept') else '')
         highlight_changes()
         final_text.focus_set()

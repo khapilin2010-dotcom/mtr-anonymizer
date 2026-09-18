@@ -16,6 +16,11 @@ from excel.review_io import REVIEW_HEADERS
 from excel.knowledge import fragments
 
 
+def review_status(item):
+    return ('ПРОВЕРЕНО АВТОМАТИЧЕСКИ ПО БАЗЕ' if item.get('automatic_review')
+            else 'ПРОВЕРЕНО ИНЖЕНЕРОМ: ' + str(item['action']))
+
+
 def _removed(source, final):
     deleted, _ = fragments(str(source or ''), str(final or ''))
     return '; '.join(x.strip() for x in deleted if x.strip())
@@ -92,7 +97,7 @@ def _xlsx(path, decisions):
                 action = str(item['action'])
                 ws.cell(excel_row, mapping[HEADERS[1]] + 1, final).data_type = 's'
                 status_cell = ws.cell(excel_row, mapping[HEADERS[2]] + 1,
-                                      'ПРОВЕРЕНО ИНЖЕНЕРОМ: ' + action)
+                                      review_status(item))
                 status_cell.data_type = 's'
                 status_cell.fill = PatternFill('solid', fgColor='D9EAD3')
                 ws.cell(excel_row, mapping[HEADERS[3]] + 1,
@@ -140,7 +145,7 @@ def _csv(path, decisions):
         final = str(item['final'])
         action = str(item['action'])
         values[mapping[HEADERS[1]]] = final
-        values[mapping[HEADERS[2]]] = 'ПРОВЕРЕНО ИНЖЕНЕРОМ: ' + action
+        values[mapping[HEADERS[2]]] = review_status(item)
         values[mapping[HEADERS[3]]] = _removed(row.get('source', ''), final)
         if REVIEW_HEADERS[0] in mapping:
             values[mapping[REVIEW_HEADERS[0]]] = action
@@ -179,7 +184,7 @@ def _xls(path, decisions):
             final = str(item['final'])
             action = str(item['action'])
             target_sheet.write(excel_row, mapping[HEADERS[1]], final)
-            target_sheet.write(excel_row, mapping[HEADERS[2]], 'ПРОВЕРЕНО ИНЖЕНЕРОМ: ' + action)
+            target_sheet.write(excel_row, mapping[HEADERS[2]], review_status(item))
             target_sheet.write(excel_row, mapping[HEADERS[3]], _removed(row.get('source', ''), final))
             if REVIEW_HEADERS[0] in mapping:
                 target_sheet.write(excel_row, mapping[REVIEW_HEADERS[0]], action)

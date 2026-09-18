@@ -111,12 +111,13 @@ def run():
     gc.collect()
     selection_checks = selection_import_smoke()
     learning_checks = learning_smoke()
+    review_checks = automatic_review_smoke()
     if sys.platform=='win32':
         import tkinter as tk
         root=tk.Tk();root.withdraw();root.update();root.destroy()
     assert not any(n in sys.modules for n in ('mtr_core','MTR_Obezlichivatel','fitz','pymupdf'))
     return {'result':'SELF_TEST_OK','version':VERSION,'frozen':bool(getattr(sys,'frozen',False)),
-            'learning_checks':learning_checks, 'selection_checks':selection_checks, 'exact_decision_checks':exact_checks, 'expert_checks':expert_checks,'database':'mtr_data.json.gz','database_sha256':hashlib.sha256(database_path().read_bytes()).hexdigest(),
+            'review_checks':review_checks, 'learning_checks':learning_checks, 'selection_checks':selection_checks, 'exact_decision_checks':exact_checks, 'expert_checks':expert_checks,'database':'mtr_data.json.gz','database_sha256':hashlib.sha256(database_path().read_bytes()).hexdigest(),
             'registry_count':len(az.registry),'formats':tested,'source_unchanged':True,
             'supplemental_sha256':supplemental_digest(),
             'reviewed_keep_count':len(REVIEWED_KEEP),
@@ -269,3 +270,40 @@ def learning_smoke():
         assert OperatorExpertAnonymizer(peer.snapshot()).anonymize('Модуль МОС-3')['knowledge']['series_kept'] == ['МОС']
         assert not feedback(store.shared, dict(online=False, pending=1, errors=['Нет доступа']))['ok']
     return ['mos_and_pkm_series_learning', 'next_row_refresh', 'shared_learning', 'color_diff_spans', 'sync_diagnostics']
+
+
+def automatic_review_smoke():
+    """Exercise RC5 threshold, automatic output and text restoration in the EXE."""
+    from excel.simple_store import SimpleKnowledgeStore
+    from excel.operator_engine import OperatorExpertAnonymizer
+    from excel.simple_review import build_review_queue, advance_review_queue
+    from excel.review_display import restore_deleted
+    from openpyxl import Workbook, load_workbook
+    from excel.file_io import HEADERS
+    with tempfile.TemporaryDirectory(prefix='MTR_RC5_') as tmp:
+        folder = Path(tmp)
+        store = SimpleKnowledgeStore(folder / 'local', folder / 'base', 'engineer')
+        src = folder / 'Вход.xlsx'; wb = Workbook(); ws = wb.active
+        ws.append(['Код Автодокс', 'Наименование', 'Завод'])
+        for n in range(1, 6):
+            ws.append([str(n), f'Панель ПКМ-ТСТ-{n} по типу ТУ 1234-567-2020', ''])
+        wb.save(src); wb.close(); before = src.read_bytes()
+        base = Anonymizer()
+        out, report = process_file(src, folder, OperatorExpertAnonymizer(store.snapshot(), base, True), knowledge_store=store)
+        rows = build_review_queue(store, [report['session']], base)
+        for n in range(3):
+            assert advance_review_queue(store, rows, n, base) == n
+            store.decide(rows[n], f'Панель ПКМ-ТСТ-{n+1}', 'Исправить')
+        event_count = len(store.events())
+        assert advance_review_queue(store, rows, 3, base) == 5
+        assert len(store.events()) == event_count
+        assert build_review_queue(store, [report['session']], base) == []
+        wb = load_workbook(out); ws = wb.active
+        col = [c.value for c in ws[1]].index(HEADERS[1]) + 1
+        assert [ws.cell(n+1, col).value for n in range(1, 6)] == [f'Панель ПКМ-ТСТ-{n}' for n in range(1, 6)]
+        wb.close(); assert src.read_bytes() == before
+        source = 'Панель ПКМ-ТСТ-1 ТУ 1234 IP66'
+        restored = restore_deleted(source, 'Панель IP66 в комплекте', (7, 16))
+        assert restored == 'Панель ПКМ-ТСТ-1 IP66 в комплекте', restored
+        assert restore_deleted(source, restored) == source + ' в комплекте'
+    return ['three_distinct_cases', 'skip_tu_only', 'write_before_skip', 'no_self_training', 'restore_selected', 'restore_all']

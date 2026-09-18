@@ -85,16 +85,25 @@ class OperatorExpertAnonymizer(_ExpertAnonymizer):
         keeps = [span for entry, spans in matches
                  if entry['value'] == 'KEEP' and entry['status'] in ('ACTIVE', 'TRUSTED') for span in spans]
         result = self._anonymize_scoped(source, code, factory, keeps)
+        from excel.auto_review import REVIEW_POLICY
+        result['knowledge']['review_policy'] = REVIEW_POLICY
         if result.get('knowledge', {}).get('exact_applied'):
             return result
         applied = [entry for entry, _ in matches if entry['value'] == 'KEEP' and entry['status'] in ('ACTIVE', 'TRUSTED')]
         disputed = [entry for entry, _ in matches if entry['status'] == 'DISPUTED']
+        from excel.auto_review import can_auto_review
+        auto_review = not disputed and can_auto_review(self.snapshot, source, code, factory, result, applied)
         if applied:
+            result['knowledge']['series_confirmations'] = {e['sample']['fragment']: e.get('case_confirmations', 0) for e in applied}
             labels = list(dict.fromkeys(e['sample']['fragment'] for e in applied))
             result['knowledge']['series_rules'] = [e['key'] for e in applied]
             result['knowledge']['series_kept'] = labels
             result['knowledge']['source'] = 'Обучение по решениям инженера'
             result['reason'] = 'По решениям инженера сохранено: ' + ', '.join(labels) + ('; ' + result['reason'] if result.get('reason') else '')
+        if auto_review:
+            result['knowledge']['auto_reviewed'] = True
+            result['status'] = 'ЗЕЛЁНЫЙ'
+            result['reason'] = 'Проверено автоматически: серия подтверждена на трёх позициях; остальные удаления — только служебные реквизиты'
         if disputed:
             result['knowledge']['series_conflicts'] = [e['key'] for e in disputed]
             return self.conflict(result, 'Противоречивые решения по обозначению: ' + ', '.join(dict.fromkeys(e['sample']['fragment'] for e in disputed)))

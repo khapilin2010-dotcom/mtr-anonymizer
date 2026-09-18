@@ -72,6 +72,18 @@ def main():
             root.update(); time.sleep(.15); root.update()
             assert final.tag_ranges('added')
             capture(root, output / 'review.png')
+            # Exercise the real selection buttons; preserve the manual suffix.
+            a = original.get('1.0', 'end-1c').index('Тестовый')
+            original.tag_add('sel', f'1.0+{a}c', f'1.0+{a+len('Тестовый завод')}c')
+            keep = next(w for w in descendants(root) if w.winfo_class() == 'TButton' and w.cget('text') == 'Оставить выделенное')
+            keep.invoke(); root.update()
+            restored = final.get('1.0', 'end-1c')
+            assert 'Тестовый завод' in restored and 'ООО' not in restored and restored.endswith('в комплекте'), restored
+            keep_all = next(w for w in descendants(root) if w.winfo_class() == 'TButton' and w.cget('text') == 'Оставить всё удалённое')
+            keep_all.invoke(); root.update()
+            assert final.get('1.0', 'end-1c') == original.get('1.0', 'end-1c') + ' в комплекте'
+            assert not original.tag_ranges('deleted')
+            capture(root, output / 'review-restored.png')
             for timer in root.tk.call('after', 'info'):
                 root.after_cancel(timer)
             root.destroy()

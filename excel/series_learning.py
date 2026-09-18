@@ -81,7 +81,8 @@ def derived_events(events, admins):
                 count = len(family_spans(source, family))
                 final_count = len(family_spans(final, family))
                 auto_count = len(family_spans(automatic, family))
-                if final_count == count and auto_count < count:
+                explicit = event.get('action') in ('Правильно', 'Исправить', 'Оставить как в исходном', 'Редактирование базы Excel')
+                if final_count == count and (auto_count < count or explicit):
                     action = 'KEEP'
                 elif final_count == 0:
                     action = 'DELETE'
@@ -97,7 +98,7 @@ def derived_events(events, admins):
                                               scope['category'], scope['role'], scope['head'], scope['unknown_factory']])
                 derived.append(dict(event, id=event['id'] + ':series:' + digest(rule_key)[:12],
                                     key=rule_key, kind='rule', value=action, fragment=family,
-                                    scope=scope, series_rule=True, origin_event=event['id'],
+                                    scope=scope, series_rule=True, origin_event=event['id'], origin_case=key,
                                     classification='серия', example=source, supersedes=[]))
     return derived
 
